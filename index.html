@@ -258,6 +258,7 @@
     <button class="tool" data-tool="door"><span class="em">🚪</span>建具</button>
     <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span id="colorSchemeLabel">配色:カラー</span></button>
     <button class="tool" id="btnExport"><span class="em">🖼️</span>画像で保存</button>
+    <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span>全階まとめて保存</button>
     <button class="tool" id="btnSave"><span class="em">💾</span>この階を保存</button>
   </div>
 </div>
@@ -2476,6 +2477,60 @@ function buildExportCanvas(scale) {
   return out;
 }
 
+// 「全階まとめて保存」用: 同じ物件の全ての階を、それぞれbuildExportCanvasで
+// 個別に描画した上で、1枚の画像に縦に並べて結合する。各階は建物の形が違い
+// 得るので、幅は一番広い階に合わせて中央寄せし、階ごとに見出し(1F等)を付ける。
+// buildExportCanvasはグローバルなstate.rooms/state.northAngleを見て描画する
+// ため、階ごとに一時的にstateを差し替えてから呼び出し、最後に元の状態へ戻す。
+function buildAllFloorsExportCanvas(scale) {
+  autoSave(); // 今表示中の階の最新状態を確実にlocalStorageへ反映してから読む
+
+  const all = loadAllProjects();
+  const proj = all[state.projectName];
+  const floorNames = proj && proj.floors ? Object.keys(proj.floors) : [];
+  if (floorNames.length === 0) return buildExportCanvas(scale);
+
+  const savedRooms = state.rooms, savedNorth = state.northAngle, savedFloorName = state.floorName;
+
+  const floorCanvases = floorNames.map((floorName) => {
+    const fd = normalizeFloorData(proj.floors[floorName]);
+    state.rooms = fd.rooms;
+    state.northAngle = fd.northAngle;
+    state.floorName = floorName;
+    return { floorName, canvas: buildExportCanvas(scale) };
+  });
+
+  state.rooms = savedRooms; state.northAngle = savedNorth; state.floorName = savedFloorName;
+  render();
+
+  const labelH = Math.round(28 * scale);
+  const gap = Math.round(14 * scale);
+  const maxW = Math.max(...floorCanvases.map((f) => f.canvas.width));
+  const totalH = floorCanvases.reduce((s, f) => s + labelH + f.canvas.height, 0) + gap * (floorCanvases.length - 1);
+
+  const out = document.createElement("canvas");
+  out.width = maxW;
+  out.height = totalH;
+  const octx = out.getContext("2d");
+  octx.fillStyle = "#ffffff";
+  octx.fillRect(0, 0, out.width, out.height);
+
+  let y = 0;
+  floorCanvases.forEach(({ floorName, canvas }, i) => {
+    octx.fillStyle = "#1c2733";
+    octx.font = `700 ${Math.round(16 * scale)}px -apple-system, sans-serif`;
+    octx.textAlign = "left"; octx.textBaseline = "middle";
+    octx.fillText(floorName, Math.round(8 * scale), y + labelH / 2);
+    y += labelH;
+    const x = Math.round((maxW - canvas.width) / 2);
+    octx.drawImage(canvas, x, y);
+    y += canvas.height;
+    if (i < floorCanvases.length - 1) y += gap;
+  });
+
+  return out;
+}
+
 // data:URLをBlobに変換する(canvas.toDataURLの結果をそのまま使う)。
 // canvas.toBlob()は非同期コールバックになり、その頃には「タップした」という
 // ブラウザ側の信頼状態(user activation)が切れてダウンロード/共有が
@@ -2558,6 +2613,16 @@ $("btnExport").addEventListener("click", () => {
   } catch (err) {
     console.error(err);
     showHint(`画像の書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
+  }
+});
+$("btnExportAllFloors").addEventListener("click", () => {
+  try {
+    const out = buildAllFloorsExportCanvas(2);
+    const blob = dataUrlToBlob(out.toDataURL("image/png"));
+    saveOrShareFile(blob, `${state.projectName}_全階.png`);
+  } catch (err) {
+    console.error(err);
+    showHint(`全階まとめての書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
   }
 });
 
