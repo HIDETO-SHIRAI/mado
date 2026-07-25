@@ -609,6 +609,45 @@ function polygonCentroidScreen(points) {
   }
   return { x: cx / (6 * a), y: cy / (6 * a) };
 }
+// L字等の凹型の部屋では、部屋全体を囲む外接矩形(bounding box)は実際の部屋の
+// 形より大きくなる(欠けた角の分)。ラベルの文字サイズを外接矩形の幅基準で
+// 決めてしまうと、その高さで実際には部屋が欠けて狭くなっている場合に文字が
+// 部屋の外(欠けた部分)へはみ出してしまう。そこで、ラベルを描く実際の位置を
+// 通る水平線・垂直線で多角形を切った時の実寸の幅・高さを使うようにする。
+function polygonWidthAtY(pts, rowY, pointX) {
+  const xs = [];
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[j], b = pts[i];
+    if ((a.y > rowY) !== (b.y > rowY)) {
+      const t = (rowY - a.y) / (b.y - a.y);
+      xs.push(a.x + (b.x - a.x) * t);
+    }
+  }
+  xs.sort((p, q) => p - q);
+  for (let i = 0; i + 1 < xs.length; i += 2) {
+    if (pointX >= xs[i] - 0.5 && pointX <= xs[i + 1] + 0.5) return xs[i + 1] - xs[i];
+  }
+  let maxSpan = 0;
+  for (let i = 0; i + 1 < xs.length; i += 2) maxSpan = Math.max(maxSpan, xs[i + 1] - xs[i]);
+  return maxSpan;
+}
+function polygonHeightAtX(pts, colX, pointY) {
+  const ys = [];
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[j], b = pts[i];
+    if ((a.x > colX) !== (b.x > colX)) {
+      const t = (colX - a.x) / (b.x - a.x);
+      ys.push(a.y + (b.y - a.y) * t);
+    }
+  }
+  ys.sort((p, q) => p - q);
+  for (let i = 0; i + 1 < ys.length; i += 2) {
+    if (pointY >= ys[i] - 0.5 && pointY <= ys[i + 1] + 0.5) return ys[i + 1] - ys[i];
+  }
+  let maxSpan = 0;
+  for (let i = 0; i + 1 < ys.length; i += 2) maxSpan = Math.max(maxSpan, ys[i + 1] - ys[i]);
+  return maxSpan;
+}
 function polygonScreenArea(points) {
   const px = points.map((p) => gridToScreen(p.gx, p.gy));
   let area = 0;
@@ -739,8 +778,13 @@ function drawRoomPolygon(room) {
   const screenPts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const boxW = Math.max(...screenPts.map((p) => p.x)) - Math.min(...screenPts.map((p) => p.x));
   const boxH = Math.max(...screenPts.map((p) => p.y)) - Math.min(...screenPts.map((p) => p.y));
-  const maxAllowed = boxW - 8;
-  const maxAllowedH = boxH - 8; // 極端に扁平(縦が狭い)な部屋でラベルが部屋境界にはみ出さないための高さ制約
+  // L字等の凹型の部屋では、ラベルを描く実際の位置での部屋の実寸幅・高さは
+  // 外接矩形より狭いことがある(欠けた角の分)。実寸の方が狭ければそちらを使い、
+  // ラベルの文字が部屋の外(欠けた部分)へはみ出さないようにする。
+  const localW = polygonWidthAtY(screenPts, labelY, c.x);
+  const localH = polygonHeightAtX(screenPts, c.x, labelY);
+  const maxAllowed = (localW > 0 ? Math.min(localW, boxW) : boxW) - 8;
+  const maxAllowedH = (localH > 0 ? Math.min(localH, boxH) : boxH) - 8; // 極端に扁平(縦が狭い)な部屋でラベルが部屋境界にはみ出さないための高さ制約
 
   function fitLines(text, startSize) {
     let size = startSize;
@@ -1188,14 +1232,50 @@ function hitTestVertexHandle(room, sx, sy) {
   return null;
 }
 
+// グリッド座標(gx,gy)系での多角形の面積重心。L字等の凹型の部屋では単純な
+// 頂点の平均(旧実装)だと欠けた角(ノッチ)の中に来てしまうことがあるため、
+// 面積に基づく重心を使う。
+function polygonCentroidGrid(points) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p0 = points[i], p1 = points[(i + 1) % points.length];
+    const cross = p0.gx * p1.gy - p1.gx * p0.gy;
+    a += cross;
+    cx += (p0.gx + p1.gx) * cross;
+    cy += (p0.gy + p1.gy) * cross;
+  }
+  a *= 0.5;
+  if (Math.abs(a) < 1e-9) {
+    return { gx: points.reduce((s, p) => s + p.gx, 0) / points.length, gy: points.reduce((s, p) => s + p.gy, 0) / points.length };
+  }
+  return { gx: cx / (6 * a), gy: cy / (6 * a) };
+}
+// グリッド座標系での点が多角形の内側にあるかの判定(レイキャスティング法)。
+function isPointInPolygonGrid(gx, gy, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i].gx, yi = points[i].gy, xj = points[j].gx, yj = points[j].gy;
+    if (((yi > gy) !== (yj > gy)) && (gx < ((xj - xi) * (gy - yi)) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
 // トイレ/浴室/洗面所/キッチンの設備アイコンは、部屋の中の好きな位置へ
 // ドラッグで動かせる(実際の間取りでは配管の都合等で中央に来るとは限らないため)。
 // room.fixturePosが未設定なら部屋の重心よりやや上を初期位置とする。
+// L字等の凹型の部屋では、重心(や単純平均)が欠けた角(部屋の外)に来ることが
+// あるため、実際に部屋の内側にあるか確認し、外なら順にフォールバックする。
 function defaultFixtureGridPos(room) {
+  const centroid = polygonCentroidGrid(room.points);
+  const nudged = { gx: centroid.gx, gy: centroid.gy - 0.3 };
+  if (isPointInPolygonGrid(nudged.gx, nudged.gy, room.points)) return nudged;
+  if (isPointInPolygonGrid(centroid.gx, centroid.gy, room.points)) return centroid;
   let gx = 0, gy = 0;
   room.points.forEach((p) => { gx += p.gx; gy += p.gy; });
   const n = room.points.length;
-  return { gx: gx / n, gy: gy / n - 0.3 };
+  const avg = { gx: gx / n, gy: gy / n };
+  if (isPointInPolygonGrid(avg.gx, avg.gy, room.points)) return avg;
+  return { gx: room.points[0].gx, gy: room.points[0].gy };
 }
 function fixtureGridPos(room) { return room.fixturePos || defaultFixtureGridPos(room); }
 function roomHasFixture(room) {
@@ -1693,11 +1773,17 @@ drawCanvas.addEventListener("pointermove", (e) => {
     const room = fixtureDrag.room;
     const xs = room.points.map((p) => p.gx), ys = room.points.map((p) => p.gy);
     const pad = 0.15;
-    room.fixturePos = {
+    const candidate = {
       gx: Math.max(Math.min(...xs) + pad, Math.min(Math.max(...xs) - pad, raw.gx)),
       gy: Math.max(Math.min(...ys) + pad, Math.min(Math.max(...ys) - pad, raw.gy)),
     };
-    render();
+    // L字等の凹型の部屋では、外接矩形の範囲内でも実際には部屋の外(欠けた角)に
+    // あたる位置があるため、実際に多角形の内側にある時だけ位置を更新する
+    // (壁に当たって止まるような感覚で、部屋の外へは出せないようにする)。
+    if (isPointInPolygonGrid(candidate.gx, candidate.gy, room.points)) {
+      room.fixturePos = candidate;
+      render();
+    }
     return;
   }
 
