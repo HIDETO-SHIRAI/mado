@@ -582,6 +582,50 @@ function updateUndoRedoButtons() {
   $("btnRedo").disabled = future.length === 0;
 }
 
+// なぞり描き・タップでの作図では、間違えて壁を伸ばしすぎてから戻す、といった
+// 操作の結果、実際の部屋の「角」ではない余分な頂点(一直線上に並ぶだけの点、
+// または行き過ぎて折り返しただけのスパイク状の点)が紛れ込むことがある。
+// 部屋を確定する直前にこれらを自動的に取り除き、意図した形だけが残るようにする。
+// 3点が一直線上(180度)でも、行き過ぎて折り返した形(0度=スパイク)でも、
+// 外積(cross)がほぼ0になる点は共通しているため、どちらも同じ判定で除去できる。
+function simplifyRoomPoints(points) {
+  const EPS = 1e-6;
+  // 1) ほぼ同一座標の連続する重複点を除去
+  let pts = [];
+  for (const p of points) {
+    const prev = pts[pts.length - 1];
+    if (!prev || Math.hypot(p.gx - prev.gx, p.gy - prev.gy) > EPS) pts.push(p);
+  }
+  if (pts.length > 1) {
+    const first = pts[0], last = pts[pts.length - 1];
+    if (Math.hypot(first.gx - last.gx, first.gy - last.gy) < EPS) pts.pop();
+  }
+  if (pts.length <= 3) return pts;
+
+  // 2) 隣接2辺がほぼ一直線(180度、またはスパイクの0度)になる頂点を繰り返し除去
+  let changed = true;
+  while (changed && pts.length > 3) {
+    changed = false;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length];
+      const b = pts[i];
+      const c = pts[(i + 1) % pts.length];
+      const abx = b.gx - a.gx, aby = b.gy - a.gy;
+      const bcx = c.gx - b.gx, bcy = c.gy - b.gy;
+      const lenAB = Math.hypot(abx, aby), lenBC = Math.hypot(bcx, bcy);
+      if (lenAB < EPS || lenBC < EPS) continue;
+      const cross = abx * bcy - aby * bcx;
+      const sinAngle = Math.abs(cross) / (lenAB * lenBC);
+      if (sinAngle < 0.02) { // 約1度未満のズレは直線/折り返しとみなし、余分な頂点として除去
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return pts;
+}
+
 /* ---------------- 面積・重心計算 ---------------- */
 function polygonAreaMasu(points) {
   let area = 0;
@@ -1960,7 +2004,7 @@ $("btnFinishRoom").addEventListener("click", () => {
 });
 
 function finishRoom() {
-  const points = drawingPoints;
+  const points = simplifyRoomPoints(drawingPoints);
   drawingPoints = []; previewPoint = null; dragAxis = null; lastRawPos = null;
   $("drawingBar").classList.remove("show");
   const masu = polygonAreaMasu(points);
