@@ -258,7 +258,6 @@
     <button class="tool" data-tool="door"><span class="em">🚪</span>建具</button>
     <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span id="colorSchemeLabel">配色:カラー</span></button>
     <button class="tool" id="btnExport"><span class="em">🖼️</span>画像で保存</button>
-    <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span>全階まとめて保存</button>
     <button class="tool" id="btnSave"><span class="em">💾</span>この階を保存</button>
   </div>
 </div>
@@ -2612,25 +2611,17 @@ $("downloadReadyLink").addEventListener("click", () => {
 });
 
 $("btnExport").addEventListener("click", () => {
+  // 「画像で保存」は、今開いている階だけでなく物件の全ての階をまとめて
+  // 1枚の画像として保存する(どの階を表示中でも常に1階から全階分)。
   // 「タップしても何も起きない」場合、途中で例外が出ても画面に何も表示されず
   // 原因が分からなくなるため、必ずヒントとして表示する。
-  try {
-    const out = buildExportCanvas(2);
-    const blob = dataUrlToBlob(out.toDataURL("image/png"));
-    saveOrShareFile(blob, `${state.projectName}_${state.floorName}.png`);
-  } catch (err) {
-    console.error(err);
-    showHint(`画像の書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
-  }
-});
-$("btnExportAllFloors").addEventListener("click", () => {
   try {
     const out = buildAllFloorsExportCanvas(2);
     const blob = dataUrlToBlob(out.toDataURL("image/png"));
     saveOrShareFile(blob, `${state.projectName}_全階.png`);
   } catch (err) {
     console.error(err);
-    showHint(`全階まとめての書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
+    showHint(`画像の書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
   }
 });
 
