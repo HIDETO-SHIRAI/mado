@@ -2503,7 +2503,10 @@ function buildAllFloorsExportCanvas(scale) {
   state.rooms = savedRooms; state.northAngle = savedNorth; state.floorName = savedFloorName;
   render();
 
-  const labelH = Math.round(28 * scale);
+  // 見出しは「小さな黒文字」だけだと階の切れ目が分かりにくかったため、
+  // 各階の幅いっぱいに色付きの帯を敷き、白抜きの大きな文字で階数を示す。
+  // 右端には「1/2階」のように通し番号も添えて、全体の中の位置も分かるようにする。
+  const labelH = Math.round(44 * scale);
   const gap = Math.round(14 * scale);
   const maxW = Math.max(...floorCanvases.map((f) => f.canvas.width));
   const totalH = floorCanvases.reduce((s, f) => s + labelH + f.canvas.height, 0) + gap * (floorCanvases.length - 1);
@@ -2517,10 +2520,15 @@ function buildAllFloorsExportCanvas(scale) {
 
   let y = 0;
   floorCanvases.forEach(({ floorName, canvas }, i) => {
-    octx.fillStyle = "#1c2733";
-    octx.font = `700 ${Math.round(16 * scale)}px -apple-system, sans-serif`;
+    octx.fillStyle = "#2f6fed";
+    octx.fillRect(0, y, maxW, labelH);
+    octx.fillStyle = "#ffffff";
+    octx.font = `700 ${Math.round(20 * scale)}px -apple-system, sans-serif`;
     octx.textAlign = "left"; octx.textBaseline = "middle";
-    octx.fillText(floorName, Math.round(8 * scale), y + labelH / 2);
+    octx.fillText(floorName, Math.round(14 * scale), y + labelH / 2);
+    octx.font = `600 ${Math.round(13 * scale)}px -apple-system, sans-serif`;
+    octx.textAlign = "right";
+    octx.fillText(`${i + 1} / ${floorCanvases.length}階`, maxW - Math.round(14 * scale), y + labelH / 2);
     y += labelH;
     const x = Math.round((maxW - canvas.width) / 2);
     octx.drawImage(canvas, x, y);
