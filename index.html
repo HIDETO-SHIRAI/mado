@@ -2167,6 +2167,7 @@ function endCompassDrag(e) {
   state.northAngle = Math.round(state.northAngle / 15) * 15 % 360;
   updateCompassVisual();
   autoSave();
+  syncNorthAngleToOtherFloors();
 }
 compassEl.addEventListener("pointerup", endCompassDrag);
 compassEl.addEventListener("pointercancel", endCompassDrag);
@@ -2707,6 +2708,27 @@ function syncStairToOtherFloors(room) {
     proj.floors[floorName] = fd;
   });
   saveAllProjects(all);
+}
+
+// 方位(北の向き)は建物全体で共通のはずなので、ある階でコンパスを回したら
+// 他の全ての階にも同じ角度を反映する(階段の自動連動と同じ考え方)。
+// 新規階作成時に現在の角度を引き継ぐだけでは、後から別の階で方位を直した時に
+// 他の階だけ古い角度のまま取り残されてしまうため、変更のたびに同期する。
+function syncNorthAngleToOtherFloors() {
+  const all = loadAllProjects();
+  const proj = all[state.projectName];
+  if (!proj || !proj.floors) return;
+  let changed = false;
+  Object.keys(proj.floors).forEach((floorName) => {
+    if (floorName === state.floorName) return;
+    const fd = normalizeFloorData(proj.floors[floorName]);
+    if (fd.northAngle !== state.northAngle) {
+      fd.northAngle = state.northAngle;
+      proj.floors[floorName] = fd;
+      changed = true;
+    }
+  });
+  if (changed) saveAllProjects(all);
 }
 
 // 階段を削除したら、他の階に複製されている分も一緒に削除する
