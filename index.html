@@ -339,6 +339,10 @@
       <label>開く向き・引き込む向きを反転</label>
       <button class="iconbtn" id="btnFlipDoor">⇄</button>
     </div>
+    <div class="flip-row" id="doorSwingRow" style="display:none;">
+      <label>内開き・外開き</label>
+      <button class="iconbtn" id="btnToggleSwing" style="width:auto; padding-left:10px; padding-right:10px;">内開き</button>
+    </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteDoor" style="display:none;">この建具を削除</button>
       <button class="btn" id="btnCancelDoor">やめる</button>
@@ -552,15 +556,16 @@ function loadLastDoorPref() {
     const saved = JSON.parse(localStorage.getItem(LAST_DOOR_PREF_KEY));
     if (saved && saved.type) return saved;
   } catch { /* 保存値が壊れていれば既定値にフォールバック */ }
-  return { type: "hinge", widthMasu: defaultWidthMasuForType("hinge"), flip: false };
+  return { type: "hinge", widthMasu: defaultWidthMasuForType("hinge"), flip: false, swingOut: false };
 }
 function saveLastDoorPref() {
-  localStorage.setItem(LAST_DOOR_PREF_KEY, JSON.stringify({ type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip }));
+  localStorage.setItem(LAST_DOOR_PREF_KEY, JSON.stringify({ type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: lastDoorSwingOut }));
 }
 const initialDoorPref = loadLastDoorPref();
 let lastDoorType = initialDoorPref.type;
 let lastDoorWidthMasu = initialDoorPref.widthMasu || defaultWidthMasuForType(initialDoorPref.type);
 let lastDoorFlip = initialDoorPref.flip;
+let lastDoorSwingOut = !!initialDoorPref.swingOut;
 let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の状態
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
@@ -711,11 +716,22 @@ function polygonScreenArea(points) {
   return Math.abs(area) / 2;
 }
 
+// 外開き(swingOut)の開き戸か判定する。引き戸・窓は振れ込まないため対象外。
+function isOutwardHingeDoor(d) {
+  return (d.type === "hinge" || d.type === "hinge_double") && !!d.swingOut;
+}
+
 /* ---------------- 描画 ---------------- */
 function render() {
   dctx.clearRect(0, 0, W, H);
   drawOtherFloorsGhost();
   for (const room of state.rooms) drawRoomPolygon(room);
+  // 外開きの開き戸は、部屋の外(隣室・屋外側)へ意図的にスイングするため、
+  // どの部屋がクリップも無く最後に描く(そうしないと、後から描かれる別の
+  // 部屋の塗りつぶしの下に隠れてしまうことがあるため)。
+  state.rooms.forEach((room) => {
+    (room.doors || []).filter((d) => isOutwardHingeDoor(d)).forEach((d) => drawDoorMark(room, d));
+  });
   if (currentTool === "wall" && editingRoom) { drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom); }
 
   if (drawingPoints.length > 0) {
@@ -801,9 +817,14 @@ function drawRoomPolygon(room) {
   dctx.stroke();
   if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
 
-  // 建具(特に開き戸のスイング円弧)・設備アイコンが部屋の外(隣室側)へ描画
-  // はみ出さないよう、この部屋自身の多角形でクリップしてから描画する
-  // (角付近に開き戸を置いた際に円弧が隣の部屋へ入り込むバグの対策)。
+  // 内開きの建具・設備アイコンが部屋の外(隣室側)へ描画はみ出さないよう、
+  // この部屋自身の多角形でクリップしてから描画する(角付近に開き戸を置いた際に
+  // 円弧が隣の部屋へ入り込むバグの対策)。外開きの開き戸は意図的に壁の外側
+  // (隣室・屋外側)へスイングするため、このクリップの対象からは除外し、
+  // 全部屋を描き終えた後に別途まとめて描く(render()側を参照。そうしないと、
+  // 後から描かれる隣室の塗りつぶしの下に隠れてしまうため)。
+  const doors = (room.doors || []).filter((d) => !isOutwardHingeDoor(d));
+
   dctx.save();
   dctx.beginPath();
   room.points.forEach((p, i) => {
@@ -812,7 +833,7 @@ function drawRoomPolygon(room) {
   });
   dctx.closePath();
   dctx.clip();
-  (room.doors || []).forEach((d) => drawDoorMark(room, d));
+  doors.forEach((d) => drawDoorMark(room, d));
   if (room.typeKey === "kaidan") drawStairSymbol(room);
 
   const c = polygonCentroidScreen(room.points);
@@ -1441,14 +1462,20 @@ function drawDoorMark(room, door) {
   const edgeLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
   if (edgeLen < 1) return;
   const ux = (s2.x - s1.x) / edgeLen, uy = (s2.y - s1.y) / edgeLen; // 壁沿いの単位ベクトル
-  const nx = -uy, ny = ux; // 法線ベクトル(壁から室内側へ90度)
+  let nx = -uy, ny = ux; // 法線ベクトル(既定では壁から室内側へ90度)
+  const type = door.type;
+  // 開き戸(hinge/hinge_double)は、内開き(既定)なら室内側へ、外開きなら
+  // 法線を反転させて壁の外側(隣室・屋外など)へスイングするようにする。
+  // 引き戸・窓は壁に沿うだけで振れ込まないため、この向きに影響されない。
+  if ((type === "hinge" || type === "hinge_double") && door.swingOut) {
+    nx = -nx; ny = -ny;
+  }
 
   const center = { x: s1.x + ux * edgeLen * door.ratio, y: s1.y + uy * edgeLen * door.ratio };
   const widthMasu = Math.min(door.widthMasu || 0.85, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
   const doorWidth = Math.max(16, widthMasu * BASE_CELL * view.scale);
   const a = { x: center.x - ux * doorWidth / 2, y: center.y - uy * doorWidth / 2 };
   const b = { x: center.x + ux * doorWidth / 2, y: center.y + uy * doorWidth / 2 };
-  const type = door.type;
   const flip = !!door.flip;
 
   dctx.save();
@@ -2335,6 +2362,14 @@ function updateFlipRowVisibility(typeKey) {
   const flippable = typeKey === "hinge" || typeKey === "slide";
   $("doorFlipRow").style.display = flippable ? "flex" : "none";
 }
+// 内開き/外開きの切り替えは、実際にスイング(円弧)を描く開き戸(hinge/
+// hinge_double)だけに意味がある。引き戸・窓は壁面に沿うだけで振れ込まない。
+function isHingeType(typeKey) {
+  return typeKey === "hinge" || typeKey === "hinge_double";
+}
+function updateSwingRowVisibility(typeKey) {
+  $("doorSwingRow").style.display = isHingeType(typeKey) ? "flex" : "none";
+}
 function updateDoorTypeSelection(typeKey) {
   doorTypeGrid.querySelectorAll(".room-type-btn").forEach((btn) => {
     btn.classList.toggle("selected", btn.dataset.doorKey === typeKey);
@@ -2345,15 +2380,21 @@ function updateDoorTypeSelection(typeKey) {
 // openDoorEditModalで保存したoriginalとの差分として扱う)
 function updateDoorModalUI() {
   updateFlipRowVisibility(pendingDoor.type);
+  updateSwingRowVisibility(pendingDoor.type);
   updateDoorTypeSelection(pendingDoor.type);
   $("doorWidthRow").style.display = "flex";
   $("doorWidthValue").textContent = Math.round(pendingDoor.widthMasu * 91); // 1マス=910mm換算のcm表示
+  $("btnToggleSwing").textContent = pendingDoor.swingOut ? "外開き" : "内開き";
   if (pendingDoor.existingIndex >= 0) {
     const d = pendingDoor.room.doors[pendingDoor.existingIndex];
-    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip;
+    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip; d.swingOut = pendingDoor.swingOut;
     render();
   }
 }
+$("btnToggleSwing").addEventListener("click", () => {
+  pendingDoor.swingOut = !pendingDoor.swingOut;
+  updateDoorModalUI();
+});
 
 function openDoorAddModal(room, hit) {
   const doors = room.doors || [];
@@ -2365,7 +2406,7 @@ function openDoorAddModal(room, hit) {
   // 直前に選んだ建具の種類・大きさを次回の初期値として引き継ぐ(同じ種類の建具を
   // 連続して付ける場面で、毎回種類を選び直さずそのまま「これで確定」だけで
   // 済むようにするため)。
-  pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip };
+  pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: lastDoorSwingOut };
   $("doorModalTitle").textContent = "建具の種類";
   $("btnDeleteDoor").style.display = "none";
   updateDoorModalUI();
@@ -2374,7 +2415,7 @@ function openDoorAddModal(room, hit) {
 function openDoorEditModal(room, index) {
   const d = room.doors[index];
   snapshot(); // 編集開始前の状態を残す(やめる/undoで復元できるように)
-  pendingDoor = { room, existingIndex: index, type: d.type, widthMasu: d.widthMasu || defaultWidthMasuForType(d.type), flip: !!d.flip, original: { ...d } };
+  pendingDoor = { room, existingIndex: index, type: d.type, widthMasu: d.widthMasu || defaultWidthMasuForType(d.type), flip: !!d.flip, swingOut: !!d.swingOut, original: { ...d } };
   $("doorModalTitle").textContent = "建具の種類を変更";
   $("btnDeleteDoor").style.display = "block";
   updateDoorModalUI();
@@ -2440,10 +2481,13 @@ function getDoorSwingWorld(room, door) {
 // 開く建具同士は本来干渉しないのに)にすると、水回りが密集した間取りで
 // 隣接する別々の部屋の建具まで誤って干渉扱いになってしまう不具合があった。
 // 同じ部屋の中で開く建具同士だけを対象にすることで、この誤検知を防ぐ
-// (警告のみで配置自体は妨げない)。
+// (警告のみで配置自体は妨げない)。外開きの建具は、この部屋自身の内側では
+// なく壁の外側(隣室・屋外側)へ振れ込むため、同室内の他の建具との比較対象
+// からは除外する(本来別の空間で振れ込むので、単純な距離比較は意味を持たない)。
 function hasDoorInterference() {
   for (const room of state.rooms) {
     const swings = (room.doors || [])
+      .filter((door) => !isOutwardHingeDoor(door))
       .map((door) => getDoorSwingWorld(room, door))
       .filter(Boolean);
     for (let i = 0; i < swings.length; i++) {
@@ -2462,10 +2506,11 @@ $("btnConfirmDoor").addEventListener("click", () => {
   if (pendingDoor.existingIndex < 0) {
     snapshot();
     if (!pendingDoor.room.doors) pendingDoor.room.doors = [];
-    pendingDoor.room.doors.push({ edge: pendingDoor.edge, ratio: pendingDoor.ratio, type: pendingDoor.type, widthMasu: pendingDoor.widthMasu, flip: pendingDoor.flip });
+    pendingDoor.room.doors.push({ edge: pendingDoor.edge, ratio: pendingDoor.ratio, type: pendingDoor.type, widthMasu: pendingDoor.widthMasu, flip: pendingDoor.flip, swingOut: pendingDoor.swingOut });
     lastDoorType = pendingDoor.type;
     lastDoorWidthMasu = pendingDoor.widthMasu;
     lastDoorFlip = pendingDoor.flip;
+    lastDoorSwingOut = pendingDoor.swingOut;
     saveLastDoorPref();
   }
   // 既存編集の場合はupdateDoorModalUI()で既にroom.doorsへ反映済み
