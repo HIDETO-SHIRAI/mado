@@ -43,6 +43,10 @@
      縦方向のflexコンテナのため、そのまま置くと縦に伸びてしまう。固定させる。 */
   #loginGate .btn.google { flex: 0 0 auto; width: 100%; }
   #loginGate .input-error { min-height: 18px; }
+  .link-btn {
+    background: none; border: none; color: var(--accent); font-size: 13px;
+    padding: 4px 2px; align-self: flex-start; flex: 0 0 auto; text-decoration: underline;
+  }
 
   /* ---- 上部バー ---- */
   #topbar {
@@ -249,6 +253,7 @@
       <p class="login-sub">続けるにはログインしてください</p>
       <input type="email" class="text-input" id="loginEmail" placeholder="メールアドレス" autocomplete="email">
       <input type="password" class="text-input" id="loginPassword" placeholder="パスワード(6文字以上)" autocomplete="current-password">
+      <button class="link-btn" id="btnForgotPassword">パスワードをお忘れですか？</button>
       <div class="input-error" id="loginError"></div>
       <div class="modal-actions">
         <button class="btn" id="btnSignUp">新規登録</button>
@@ -460,7 +465,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signInWithPopup, GoogleAuthProvider, signOut,
+  signInWithPopup, GoogleAuthProvider, signOut, sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -508,6 +513,7 @@ function mapAuthError(err) {
     "auth/email-already-in-use": "このメールアドレスは既に登録されています。ログインをお試しください",
     "auth/weak-password": "パスワードは6文字以上で入力してください",
     "auth/invalid-email": "メールアドレスの形式が正しくありません",
+    "auth/missing-email": "メールアドレスを入力してください",
     "auth/too-many-requests": "試行回数が多すぎます。しばらく待ってからお試しください",
     "auth/network-request-failed": "ネットワークに接続できません。電波の良い場所でお試しください",
     "auth/popup-closed-by-user": "ログインがキャンセルされました",
@@ -707,6 +713,7 @@ window.Cloud = {
   // ブロッカーに引っかからないよう、ユーザー操作の直接の結果である必要がある。
   signInGoogle() { return signInWithPopup(auth, new GoogleAuthProvider()); },
   signOutUser() { return signOut(auth); },
+  resetPassword(email) { return sendPasswordResetEmail(auth, email); },
 };
 window.dispatchEvent(new Event("cloud-ready"));
 </script>
@@ -3634,6 +3641,18 @@ $("btnGoogleSignIn").addEventListener("click", () => {
 $("btnLogout").addEventListener("click", () => {
   if (!window.Cloud) return;
   openConfirm("ログアウト", "ログアウトしますか？", () => window.Cloud.signOutUser());
+});
+$("btnForgotPassword").addEventListener("click", async () => {
+  if (!window.Cloud) return;
+  $("loginError").textContent = "";
+  const email = $("loginEmail").value.trim();
+  if (!email) { $("loginError").textContent = "メールアドレスを入力してください"; return; }
+  try {
+    await window.Cloud.resetPassword(email);
+    showHint("パスワード再設定用のメールを送信しました。届いたメールの案内に従って再設定してください", true);
+  } catch (err) {
+    showLoginError(err);
+  }
 });
 
 // type="module"のFirebase初期化スクリプトは常に本体scriptより後に実行される
