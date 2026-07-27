@@ -339,10 +339,6 @@
       <label>開く向き・引き込む向きを反転</label>
       <button class="iconbtn" id="btnFlipDoor">⇄</button>
     </div>
-    <div class="flip-row" id="doorSwingRow" style="display:none;">
-      <label>内開き・外開き</label>
-      <button class="iconbtn" id="btnToggleSwing" style="width:auto; padding-left:10px; padding-right:10px;">内開き</button>
-    </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteDoor" style="display:none;">この建具を削除</button>
       <button class="btn" id="btnCancelDoor">やめる</button>
@@ -556,16 +552,15 @@ function loadLastDoorPref() {
     const saved = JSON.parse(localStorage.getItem(LAST_DOOR_PREF_KEY));
     if (saved && saved.type) return saved;
   } catch { /* 保存値が壊れていれば既定値にフォールバック */ }
-  return { type: "hinge", widthMasu: defaultWidthMasuForType("hinge"), flip: false, swingOut: false };
+  return { type: "hinge", widthMasu: defaultWidthMasuForType("hinge"), flip: false };
 }
 function saveLastDoorPref() {
-  localStorage.setItem(LAST_DOOR_PREF_KEY, JSON.stringify({ type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: lastDoorSwingOut }));
+  localStorage.setItem(LAST_DOOR_PREF_KEY, JSON.stringify({ type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip }));
 }
 const initialDoorPref = loadLastDoorPref();
 let lastDoorType = initialDoorPref.type;
 let lastDoorWidthMasu = initialDoorPref.widthMasu || defaultWidthMasuForType(initialDoorPref.type);
 let lastDoorFlip = initialDoorPref.flip;
-let lastDoorSwingOut = !!initialDoorPref.swingOut;
 let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の状態
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
@@ -1657,6 +1652,22 @@ function hitTestEdgeForDrag(room, screenX, screenY) {
   return best;
 }
 
+// 生のポインタ位置(sx,sy)が、指定した辺(壁)を挟んでどちら側にあるかを
+// 符号付きで返す(正=室内側、負=壁の外側)。drawDoorMarkの既定の法線
+// (室内側へ90度)と同じ向きの基準を使い、建具のドラッグ移動中に指を部屋の
+// 内側/外側どちらへ動かしたかで内開き/外開きを切り替えるために使う。
+function pointerSideOfEdge(room, edgeIndex, sx, sy) {
+  const p1 = room.points[edgeIndex];
+  const p2 = room.points[(edgeIndex + 1) % room.points.length];
+  const s1 = gridToScreen(p1.gx, p1.gy), s2 = gridToScreen(p2.gx, p2.gy);
+  const dx = s2.x - s1.x, dy = s2.y - s1.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return 1;
+  const ux = dx / len, uy = dy / len;
+  const nx = -uy, ny = ux; // 室内側への法線(drawDoorMarkの既定と同じ向き)
+  return (sx - s1.x) * nx + (sy - s1.y) * ny;
+}
+
 const VERTEX_SNAP_DIST_MASU = 0.4; // 既存の頂点にスナップする許容距離(グリッド単位、1/1モード時)
 // 1/2,1/3...等の細かいモードでは、この距離が粗すぎると細かい位置調整が
 // 既存の遠い頂点に引っ張られてしまうため、細かさに応じて許容距離を縮める。
@@ -1928,6 +1939,12 @@ drawCanvas.addEventListener("pointermove", (e) => {
         const door = room.doors[doorDrag.doorIndex];
         door.edge = hit.edge;
         door.ratio = hit.ratio;
+        // 開き戸(hinge/hinge_double)は、生の指位置が壁のどちら側にあるかで
+        // 内開き/外開きを決める。部屋の内側へドラッグすれば内開き、壁を
+        // 越えて外側(隣室・屋外側)へドラッグすれば外開きに切り替わる。
+        if (door.type === "hinge" || door.type === "hinge_double") {
+          door.swingOut = pointerSideOfEdge(room, hit.edge, sx, sy) < 0;
+        }
         doorDrag.moved = true;
         render();
       }
@@ -2362,14 +2379,6 @@ function updateFlipRowVisibility(typeKey) {
   const flippable = typeKey === "hinge" || typeKey === "slide";
   $("doorFlipRow").style.display = flippable ? "flex" : "none";
 }
-// 内開き/外開きの切り替えは、実際にスイング(円弧)を描く開き戸(hinge/
-// hinge_double)だけに意味がある。引き戸・窓は壁面に沿うだけで振れ込まない。
-function isHingeType(typeKey) {
-  return typeKey === "hinge" || typeKey === "hinge_double";
-}
-function updateSwingRowVisibility(typeKey) {
-  $("doorSwingRow").style.display = isHingeType(typeKey) ? "flex" : "none";
-}
 function updateDoorTypeSelection(typeKey) {
   doorTypeGrid.querySelectorAll(".room-type-btn").forEach((btn) => {
     btn.classList.toggle("selected", btn.dataset.doorKey === typeKey);
@@ -2380,21 +2389,15 @@ function updateDoorTypeSelection(typeKey) {
 // openDoorEditModalで保存したoriginalとの差分として扱う)
 function updateDoorModalUI() {
   updateFlipRowVisibility(pendingDoor.type);
-  updateSwingRowVisibility(pendingDoor.type);
   updateDoorTypeSelection(pendingDoor.type);
   $("doorWidthRow").style.display = "flex";
   $("doorWidthValue").textContent = Math.round(pendingDoor.widthMasu * 91); // 1マス=910mm換算のcm表示
-  $("btnToggleSwing").textContent = pendingDoor.swingOut ? "外開き" : "内開き";
   if (pendingDoor.existingIndex >= 0) {
     const d = pendingDoor.room.doors[pendingDoor.existingIndex];
-    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip; d.swingOut = pendingDoor.swingOut;
+    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip;
     render();
   }
 }
-$("btnToggleSwing").addEventListener("click", () => {
-  pendingDoor.swingOut = !pendingDoor.swingOut;
-  updateDoorModalUI();
-});
 
 function openDoorAddModal(room, hit) {
   const doors = room.doors || [];
@@ -2406,7 +2409,10 @@ function openDoorAddModal(room, hit) {
   // 直前に選んだ建具の種類・大きさを次回の初期値として引き継ぐ(同じ種類の建具を
   // 連続して付ける場面で、毎回種類を選び直さずそのまま「これで確定」だけで
   // 済むようにするため)。
-  pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: lastDoorSwingOut };
+  // 新規に付ける建具は常に内開き(swingOut:false)から始まる。内開き/外開きの
+  // 切り替えはボタンではなく、既存の建具をドラッグで移動する操作の中で
+  // (壁のどちら側へ動かしたかに応じて)行う仕様のため。
+  pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: false };
   $("doorModalTitle").textContent = "建具の種類";
   $("btnDeleteDoor").style.display = "none";
   updateDoorModalUI();
@@ -2510,7 +2516,6 @@ $("btnConfirmDoor").addEventListener("click", () => {
     lastDoorType = pendingDoor.type;
     lastDoorWidthMasu = pendingDoor.widthMasu;
     lastDoorFlip = pendingDoor.flip;
-    lastDoorSwingOut = pendingDoor.swingOut;
     saveLastDoorPref();
   }
   // 既存編集の場合はupdateDoorModalUI()で既にroom.doorsへ反映済み
