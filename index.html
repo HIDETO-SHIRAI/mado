@@ -519,6 +519,7 @@ function mapAuthError(err) {
     "auth/popup-closed-by-user": "ログインがキャンセルされました",
     "auth/cancelled-popup-request": "ログインがキャンセルされました",
     "auth/account-exists-with-different-credential": "このメールアドレスは別の方法（パスワード等）で登録されています",
+    "auth/unauthorized-domain": "このサイトのドメインがFirebase側で未承認のため、Googleログインを利用できません。管理者にご連絡ください",
   };
   if (code && table[code]) return table[code];
   console.error("未対応のFirebase認証エラー:", err);
