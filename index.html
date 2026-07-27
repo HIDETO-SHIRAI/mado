@@ -43,6 +43,7 @@
      縦方向のflexコンテナのため、そのまま置くと縦に伸びてしまう。固定させる。 */
   #loginGate .btn.google { flex: 0 0 auto; width: 100%; }
   #loginGate .input-error { min-height: 18px; }
+  #loginGate .login-hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 0 0 6px; }
   .link-btn {
     background: none; border: none; color: var(--accent); font-size: 13px;
     padding: 4px 2px; align-self: flex-start; flex: 0 0 auto; text-decoration: underline;
@@ -255,6 +256,7 @@
       <input type="password" class="text-input" id="loginPassword" placeholder="パスワード(6文字以上)" autocomplete="current-password">
       <button class="link-btn" id="btnForgotPassword">パスワードをお忘れですか？</button>
       <div class="input-error" id="loginError"></div>
+      <p class="login-hint">上のメールアドレス・パスワードを入力し、初めての方は「新規登録」、登録済みの方は「ログイン」を押してください（別の画面には移りません）</p>
       <div class="modal-actions">
         <button class="btn" id="btnSignUp">新規登録</button>
         <button class="btn primary" id="btnSignIn">ログイン</button>
