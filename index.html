@@ -2434,23 +2434,25 @@ function getDoorSwingWorld(room, door) {
   const hinge = door.flip ? b : a;
   return { hinge, radius: doorWidth };
 }
-// 今の階にある開き戸同士で、振れ込み範囲(円で近似)が重なっているものが
-// 無いか調べる。狭い廊下の両側から扉が振れ込んで物理的に干渉するケースを
-// 検知するための簡易チェック(警告のみで配置自体は妨げない)。
+// 同じ部屋の中にある開き戸同士で、振れ込み範囲(円で近似)が重なっている
+// ものが無いか調べる。実寸化(建具幅を実際のwidthMasu基準にした)により
+// 振れ込み半径が大きくなったため、部屋をまたいだ比較のまま(=別の部屋へ
+// 開く建具同士は本来干渉しないのに)にすると、水回りが密集した間取りで
+// 隣接する別々の部屋の建具まで誤って干渉扱いになってしまう不具合があった。
+// 同じ部屋の中で開く建具同士だけを対象にすることで、この誤検知を防ぐ
+// (警告のみで配置自体は妨げない)。
 function hasDoorInterference() {
-  const swings = [];
-  state.rooms.forEach((room) => {
-    (room.doors || []).forEach((door) => {
-      const s = getDoorSwingWorld(room, door);
-      if (s) swings.push(s);
-    });
-  });
-  for (let i = 0; i < swings.length; i++) {
-    for (let j = i + 1; j < swings.length; j++) {
-      const a = swings[i], b = swings[j];
-      const dist = Math.hypot(a.hinge.gx - b.hinge.gx, a.hinge.gy - b.hinge.gy);
-      // 半径の合計より明確に近い場合のみ警告する(僅かな近接は許容)
-      if (dist < (a.radius + b.radius) * 0.85) return true;
+  for (const room of state.rooms) {
+    const swings = (room.doors || [])
+      .map((door) => getDoorSwingWorld(room, door))
+      .filter(Boolean);
+    for (let i = 0; i < swings.length; i++) {
+      for (let j = i + 1; j < swings.length; j++) {
+        const a = swings[i], b = swings[j];
+        const dist = Math.hypot(a.hinge.gx - b.hinge.gx, a.hinge.gy - b.hinge.gy);
+        // 半径の合計より明確に近い場合のみ警告する(僅かな近接は許容)
+        if (dist < (a.radius + b.radius) * 0.85) return true;
+      }
     }
   }
   return false;
