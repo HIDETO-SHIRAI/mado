@@ -30,6 +30,19 @@
     touch-action: none;
   }
   #app { display: flex; flex-direction: column; height: 100%; }
+  #app.app-hidden { display: none !important; }
+
+  /* ---- ログイン画面 ---- */
+  #loginGate .page-body { justify-content: center; gap: 10px; }
+  #loginGate h1 { font-size: 20px; margin: 0 0 4px; text-align: center; }
+  #loginGate .login-sub { font-size: 13px; color: var(--muted); text-align: center; margin: 0 0 18px; }
+  #loginGate .login-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 14px 0; }
+  #loginGate .login-divider::before, #loginGate .login-divider::after { content: ""; flex: 1; height: 1px; background: #e3e8ee; }
+  #loginGate .login-note { font-size: 12px; color: var(--muted); text-align: center; margin-top: 18px; line-height: 1.6; }
+  /* .btnのflex:1は横並びの.modal-actions前提。#loginGateの.page-bodyは
+     縦方向のflexコンテナのため、そのまま置くと縦に伸びてしまう。固定させる。 */
+  #loginGate .btn.google { flex: 0 0 auto; width: 100%; }
+  #loginGate .input-error { min-height: 18px; }
 
   /* ---- 上部バー ---- */
   #topbar {
@@ -227,7 +240,27 @@
 </style>
 </head>
 <body>
-<div id="app">
+<!-- ログイン画面: Firebase認証でログインするまでこれだけを表示し、アプリ本体
+     (#app)は隠しておく。ログイン自体がアクセス制限の役割を兼ねる。 -->
+<div class="modal-overlay fullpage show" id="loginGate">
+  <div class="modal">
+    <div class="page-body">
+      <h1>間取りメモ</h1>
+      <p class="login-sub">続けるにはログインしてください</p>
+      <input type="email" class="text-input" id="loginEmail" placeholder="メールアドレス" autocomplete="email">
+      <input type="password" class="text-input" id="loginPassword" placeholder="パスワード(6文字以上)" autocomplete="current-password">
+      <div class="input-error" id="loginError"></div>
+      <div class="modal-actions">
+        <button class="btn" id="btnSignUp">新規登録</button>
+        <button class="btn primary" id="btnSignIn">ログイン</button>
+      </div>
+      <div class="login-divider">または</div>
+      <button class="btn google" id="btnGoogleSignIn">Googleでログイン</button>
+      <p class="login-note">LINEやInstagramのアプリ内ブラウザからではなく、Safari/Chromeで開いてください（Googleログインが正しく動作しないことがあります）。</p>
+    </div>
+  </div>
+</div>
+<div id="app" class="app-hidden">
   <div id="topbar">
     <button class="iconbtn" id="btnProjects" title="物件一覧"><span>📁</span><span class="cap">物件</span></button>
     <h1 id="projectTitle" style="cursor:pointer" title="タップで物件名を編集">無題の物件 - 1F</h1>
@@ -354,6 +387,7 @@
     <div class="page-header">
       <button class="iconbtn" id="btnCloseProjectsPage" title="閉じる"><span>←</span></button>
       <h2>物件一覧</h2>
+      <button class="iconbtn" id="btnLogout" title="ログアウト"><span>🚪</span><span class="cap">ログアウト</span></button>
     </div>
     <div class="page-body">
       <input type="text" class="text-input" id="projectSearchInput" placeholder="物件名で検索" style="margin-bottom:8px;">
@@ -404,6 +438,278 @@
     </div>
   </div>
 </div>
+
+<script type="module">
+/* ============================================================
+   Firebase(Auth + Firestore)連携。
+   下の巨大な非moduleスクリプト(間取り作図アプリ本体)とは別スコープの
+   ES moduleとして、意図的に分離してある(本体の3000行規模のスクリプトへ
+   影響を与えず、回帰リスクを抑えるため)。本体からは window.Cloud という
+   狭いAPIだけを呼ぶ。
+
+   重要な注意: type="module" のスクリプトは常に「遅延実行」される(通常の
+   同期<script>より後、DOM構築後に実行される)。そのため本体スクリプトの
+   末尾にある起動処理からこのスクリプトの完了を前提に直接呼び出すことは
+   できない(まだ実行されていない可能性がある)。逆に本体スクリプト側の
+   関数(showHint/openConfirm等、トップレベルのfunction宣言はwindowに
+   自動的に生えるため)は、moduleが実行される時点では既に定義済みである
+   ことが保証される(非moduleの同期scriptは常にmoduleより先に実行される
+   ため)。この非対称性を踏まえ、本体→Cloud の呼び出しだけ
+   "cloud-ready" イベントで待ち合わせる設計にしてある。
+   ============================================================ */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
+import {
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  signInWithPopup, GoogleAuthProvider, signOut,
+} from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
+import {
+  initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  collection, doc, getDocs, setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp,
+} from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
+
+// Firebaseの apiKey はサーバーの秘密鍵ではなく公開識別子であり、公開リポジトリに
+// 含まれていても問題ない(実際のアクセス制御はFirestoreセキュリティルール側で行う)。
+const firebaseConfig = {
+  apiKey: "AIzaSyCdwD6EGf-Ax2_Na4eEn0dxZ6uvrOXa7p8",
+  authDomain: "madori-app-19ee6.firebaseapp.com",
+  projectId: "madori-app-19ee6",
+  storageBucket: "madori-app-19ee6.firebasestorage.app",
+  messagingSenderId: "1093981161464",
+  appId: "1:1093981161464:web:ff069b0bbcaa0b9fe4380d",
+};
+
+const fbApp = initializeApp(firebaseConfig);
+const auth = getAuth(fbApp);
+// オフラインでも直前までのデータを読み書きできるよう永続キャッシュを有効化する。
+// 内覧現場等、電波の弱い場所でも動作を続けられるようにするため。
+const db = initializeFirestore(fbApp, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
+
+// 旧localStorage形式(移行チェック用)。本体スクリプトの STORAGE_KEY と同じ値。
+const LOCAL_STORAGE_KEY = "madori_projects_v2";
+const MIGRATED_FLAG_KEY = "madori_migrated_v1";
+
+let currentUid = null;
+let allProjectsCache = {}; // { [projectName]: { id, floors } }
+let writeChain = Promise.resolve(); // 同一ドキュメントへの書き込み順序を保証する
+let debounceTimer = null;
+let pendingDiffBase = null; // このバッチの直前スナップショット(差分比較の基準)
+
+function projectsCollectionRef() {
+  return collection(db, "users", currentUid, "projects");
+}
+
+// Firebase Authのエラーコードを日本語の案内文に変換する。
+function mapAuthError(err) {
+  const code = err && err.code;
+  const table = {
+    "auth/invalid-credential": "メールアドレスまたはパスワードが正しくありません",
+    "auth/email-already-in-use": "このメールアドレスは既に登録されています。ログインをお試しください",
+    "auth/weak-password": "パスワードは6文字以上で入力してください",
+    "auth/invalid-email": "メールアドレスの形式が正しくありません",
+    "auth/too-many-requests": "試行回数が多すぎます。しばらく待ってからお試しください",
+    "auth/network-request-failed": "ネットワークに接続できません。電波の良い場所でお試しください",
+    "auth/popup-closed-by-user": "ログインがキャンセルされました",
+    "auth/cancelled-popup-request": "ログインがキャンセルされました",
+    "auth/account-exists-with-different-credential": "このメールアドレスは別の方法（パスワード等）で登録されています",
+  };
+  if (code && table[code]) return table[code];
+  console.error("未対応のFirebase認証エラー:", err);
+  return "ログインに失敗しました。もう一度お試しください";
+}
+
+// Firestore書き込み失敗時、本体スクリプトの showHint と同じパターンで警告表示する。
+function reportCloudError(context, err) {
+  console.error(context, err);
+  if (typeof window.showHint === "function") {
+    window.showHint(`クラウドへの保存に失敗しました(${context})。電波の良い場所で操作をやり直してください`, true);
+  }
+}
+
+// オフライン中に発行した書き込みは、接続が復旧するまでPromiseが解決されずに
+// 待ち続ける(Firestoreの正常な挙動)。ただしwriteChainは前の書き込みの完了を
+// 待ってから次を実行する直列キューのため、何らかの理由で1件でも解決しない
+// ままになると、それ以降の全ての書き込みが永久にブロックされてしまう。
+// 個々の書き込みにタイムアウトを設け、詰まっても後続の書き込みへ進めるようにする。
+const WRITE_TIMEOUT_MS = 20000;
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
+}
+function queueWrite(fn, context) {
+  writeChain = writeChain.then(() => withTimeout(fn(), WRITE_TIMEOUT_MS)).catch((err) => reportCloudError(context, err));
+  return writeChain;
+}
+
+// allProjectsCache(前回スナップショットprevと現在next)を プロジェクトID単位・
+// フロア単位で比較し、変更分だけをFirestoreへ送る。ドキュメント全体を丸ごと
+// 上書きしないのは、他端末が別フロアを編集中に上書きで消してしまう事故を
+// 避けるため(フロア単位のドット記法更新なら、他フロアには触れない)。
+function dispatchDiff(prev, next) {
+  if (!currentUid) return;
+  const prevById = {};
+  for (const name in prev) { const p = prev[name]; if (p && p.id) prevById[p.id] = { name, floors: p.floors || {} }; }
+  const nextIds = new Set();
+  for (const name in next) {
+    const p = next[name];
+    if (!p.id) {
+      p.id = crypto.randomUUID();
+      // next はallProjectsCacheのJSON複製(使い捨て)なので、ここで生成したIDは
+      // 実際のライブキャッシュにも書き戻す。書き戻さないと、次回のcommit()時に
+      // 「IDが無い=新規プロジェクト」と誤認識され続け、保存のたびに別IDで
+      // Firestore上に重複ドキュメントが増殖するバグになる(実際に発生していた)。
+      if (allProjectsCache[name]) allProjectsCache[name].id = p.id;
+    }
+    nextIds.add(p.id);
+  }
+  // 削除: prevにあってnextに無いID
+  for (const id in prevById) {
+    if (!nextIds.has(id)) {
+      queueWrite(() => deleteDoc(doc(projectsCollectionRef(), id)), `物件削除:${prevById[id].name}`);
+    }
+  }
+  // 追加・変更・改名
+  for (const name in next) {
+    const p = next[name];
+    const prevEntry = prevById[p.id];
+    if (!prevEntry) {
+      // 新規プロジェクト: フルセットで作成
+      queueWrite(() => setDoc(doc(projectsCollectionRef(), p.id), {
+        name, floors: p.floors || {}, updatedAt: serverTimestamp(),
+      }), `物件作成:${name}`);
+      continue;
+    }
+    const patch = {};
+    let changed = false;
+    if (prevEntry.name !== name) { patch.name = name; changed = true; }
+    const nextFloors = p.floors || {};
+    const prevFloors = prevEntry.floors || {};
+    for (const floorName in nextFloors) {
+      if (JSON.stringify(prevFloors[floorName]) !== JSON.stringify(nextFloors[floorName])) {
+        patch[`floors.${floorName}`] = nextFloors[floorName];
+        changed = true;
+      }
+    }
+    for (const floorName in prevFloors) {
+      if (!(floorName in nextFloors)) {
+        patch[`floors.${floorName}`] = deleteField();
+        changed = true;
+      }
+    }
+    if (changed) {
+      patch.updatedAt = serverTimestamp();
+      queueWrite(() => updateDoc(doc(projectsCollectionRef(), p.id), patch), `物件更新:${name}`);
+    }
+  }
+}
+
+const SYNC_DEBOUNCE_MS = 1800;
+function scheduleSync(prevSnapshot) {
+  if (!pendingDiffBase) pendingDiffBase = prevSnapshot;
+  if (debounceTimer) return;
+  debounceTimer = setTimeout(() => {
+    const from = pendingDiffBase;
+    const to = JSON.parse(JSON.stringify(allProjectsCache));
+    pendingDiffBase = null;
+    debounceTimer = null;
+    dispatchDiff(from, to);
+  }, SYNC_DEBOUNCE_MS);
+}
+function flushSyncNow() {
+  if (!debounceTimer) return;
+  clearTimeout(debounceTimer);
+  debounceTimer = null;
+  const from = pendingDiffBase;
+  pendingDiffBase = null;
+  if (from) dispatchDiff(from, JSON.parse(JSON.stringify(allProjectsCache)));
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushSyncNow(); });
+window.addEventListener("beforeunload", flushSyncNow);
+
+async function loadAllProjectsFromCloud(uid) {
+  currentUid = uid;
+  const snap = await getDocs(projectsCollectionRef());
+  const cache = {};
+  snap.forEach((docSnap) => {
+    const data = docSnap.data();
+    cache[data.name] = { id: docSnap.id, floors: data.floors || {} };
+  });
+  allProjectsCache = cache;
+}
+
+// 初回ログイン時、既存のlocalStorageデータがありクラウド側が空なら取り込みを提案する。
+// btnConfirmCancelは全確認ダイアログ共通のボタンのため、キャンセル検知のために
+// 個別のリスナーを付けたりはしない(呼び出し元はこの関数の完了を待たない=
+// ユーザーが確認ダイアログにいつ答えるかに関わらず、アプリの起動は先に進める)。
+// 「やめる」を選んだ場合は何もせず、次回ログイン時にまた提案するだけでよい。
+function migrateLocalDataIfNeeded() {
+  if (localStorage.getItem(MIGRATED_FLAG_KEY) === "true") return;
+  if (Object.keys(allProjectsCache).length > 0) return; // 既にクラウド側にデータがあれば対象外
+  let localAll;
+  try { localAll = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)); } catch { localAll = null; }
+  const names = localAll ? Object.keys(localAll) : [];
+  if (names.length === 0) return;
+  if (typeof window.openConfirm !== "function") return;
+  window.openConfirm(
+    "物件データの取り込み",
+    `この端末に保存されている${names.length}件の物件データを、このアカウントに取り込みますか？`,
+    async () => {
+      try {
+        for (const name of names) {
+          const id = crypto.randomUUID();
+          const floors = (localAll[name] && localAll[name].floors) || {};
+          await setDoc(doc(projectsCollectionRef(), id), { name, floors, updatedAt: serverTimestamp() });
+          allProjectsCache[name] = { id, floors };
+        }
+        localStorage.setItem(MIGRATED_FLAG_KEY, "true"); // 成功後にだけフラグを立てる
+        if (typeof window.showHint === "function") window.showHint(`${names.length}件の物件をクラウドに移行しました`, true);
+        if (typeof window.renderProjectList === "function") window.renderProjectList();
+      } catch (err) {
+        reportCloudError("移行", err);
+      }
+    }
+  );
+}
+
+let readyCallback = null;
+let lastUser; // undefined = 未解決
+onAuthStateChanged(auth, (user) => {
+  lastUser = user;
+  if (!user) { currentUid = null; allProjectsCache = {}; }
+  if (readyCallback) readyCallback(user);
+});
+
+window.Cloud = {
+  onReady(cb) {
+    readyCallback = cb;
+    if (lastUser !== undefined) cb(lastUser);
+  },
+  getCache() {
+    try { return JSON.parse(JSON.stringify(allProjectsCache)); } catch { return {}; }
+  },
+  commit(data) {
+    // 差分比較の基準として保持するprevは、呼び出し側が保持する生の配列
+    // (state.rooms等)を後から書き換えても影響を受けないよう、必ず複製する
+    // (呼び出し側でのクローン漏れがあっても安全側に倒すための二重の対策)。
+    const prev = JSON.parse(JSON.stringify(allProjectsCache));
+    allProjectsCache = data;
+    scheduleSync(prev);
+  },
+  loadAllProjectsFromCloud,
+  migrateLocalDataIfNeeded,
+  mapAuthError,
+  async signInEmail(email, password) { return signInWithEmailAndPassword(auth, email, password); },
+  async signUpEmail(email, password) { return createUserWithEmailAndPassword(auth, email, password); },
+  // ボタンのクリックハンドラから同期的に(awaitを挟まず)呼ぶこと。ポップアップ
+  // ブロッカーに引っかからないよう、ユーザー操作の直接の結果である必要がある。
+  signInGoogle() { return signInWithPopup(auth, new GoogleAuthProvider()); },
+  signOutUser() { return signOut(auth); },
+};
+window.dispatchEvent(new Event("cloud-ready"));
+</script>
 
 <script>
 /* ============================================================
@@ -2878,31 +3184,35 @@ $("btnConfirmOk").addEventListener("click", () => {
   confirmCallback = null;
 });
 
-/* ---------------- 保存・物件管理 (localStorage) ---------------- */
+/* ---------------- 保存・物件管理 (Firestore経由。window.Cloudが実体を持つ) ---------------- */
+// STORAGE_KEYは現在Firestoreへの移行チェック(migrateLocalDataIfNeeded)でのみ
+// 参照される旧キー名。LAST_OPEN_KEYは「最後に開いていた物件/階」という
+// 端末固有のUI状態なので、これだけは今まで通りlocalStorageのままにする
+// (クラウドに同期する必要が無く、むしろ端末ごとに別々の方が自然なため)。
 const STORAGE_KEY = "madori_projects_v2";
 const LAST_OPEN_KEY = "madori_last_open_v1";
 
+// これ以降の呼び出し側(約25箇所)は一切変更していない。実体は
+// window.Cloud.getCache()/commit()(Firestoreと同期するメモリ上のキャッシュ)
+// に差し替わっているが、同期的なインターフェースは変えていない。
 function loadAllProjects() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+  return (window.Cloud && window.Cloud.getCache()) || {};
 }
-// localStorageの容量上限(端末により5〜10MB程度)を超えるとsetItemが例外を
-// 投げる。これを捕まえずにいると、以降の自動保存が全て静かに失敗し続け、
-// 「保存したつもりが実は保存されていなかった」という一番困るタイミングで
-// 気付けない不具合になるため、必ず利用者に分かる形で警告する。
 function saveAllProjects(data) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (err) {
-    console.error("物件データの保存に失敗しました:", err);
-    showHint("保存容量の上限に達したため保存できませんでした。使っていない物件を削除してください", true);
-  }
+  if (window.Cloud) window.Cloud.commit(data);
 }
 function saveLastOpen() {
   localStorage.setItem(LAST_OPEN_KEY, JSON.stringify({ project: state.projectName, floor: state.floorName }));
 }
 function saveCurrentFloorInto(all) {
   if (!all[state.projectName]) all[state.projectName] = { floors: {} };
-  all[state.projectName].floors[state.floorName] = { rooms: state.rooms, northAngle: state.northAngle || 0 };
+  // state.roomsは以後もユーザー操作で書き換わり続ける生の配列なので、参照の
+  // ままここに入れてはいけない。クラウド同期の差分比較(直前スナップショットと
+  // 今回のデータを見比べる)は、比較対象を1.8秒ほど後まで保持するため、参照の
+  // ままだと後から描いた部屋が「過去に確定させたはずのスナップショット」side
+  // にまで遡って反映されてしまい、差分が常に「変化なし」と誤判定される
+  // (実機検証で見つかった不具合)。必ず複製してから保持する。
+  all[state.projectName].floors[state.floorName] = { rooms: JSON.parse(JSON.stringify(state.rooms)), northAngle: state.northAngle || 0 };
   return all;
 }
 // 階データの読み込みヘルパー。旧形式(rooms配列そのもの)と新形式({rooms, northAngle})の両方に対応する。
@@ -3279,12 +3589,88 @@ function restoreLastOpen() {
 window.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") autoSave(); });
 window.addEventListener("beforeunload", autoSave);
 
+/* ---------------- ログイン画面(Firebase Auth) ---------------- */
+// #app内に無い(=#appを隠すだけでは連動して隠れない)全画面固定要素を
+// まとめて隠す。ログアウト時、開きっぱなしのモーダルが残ってしまうのを防ぐ。
+function hideAllModalsAndBanners() {
+  document.querySelectorAll(".modal-overlay.show, .modal-overlay.hidden-behind").forEach((el) => {
+    if (el.id === "loginGate") return;
+    el.classList.remove("show", "hidden-behind");
+  });
+  modalStack = [];
+  const banner = $("downloadReadyBanner");
+  if (banner) banner.style.display = "none";
+}
+function showAppUI() {
+  $("loginGate").classList.remove("show");
+  $("app").classList.remove("app-hidden");
+}
+function hideAppUI() {
+  hideAllModalsAndBanners();
+  $("app").classList.add("app-hidden");
+  $("loginGate").classList.add("show");
+}
+function showLoginError(err) {
+  $("loginError").textContent = (window.Cloud && window.Cloud.mapAuthError(err)) || "ログインに失敗しました。もう一度お試しください";
+}
+$("btnSignIn").addEventListener("click", async () => {
+  if (!window.Cloud) return;
+  $("loginError").textContent = "";
+  try { await window.Cloud.signInEmail($("loginEmail").value.trim(), $("loginPassword").value); }
+  catch (err) { showLoginError(err); }
+});
+$("btnSignUp").addEventListener("click", async () => {
+  if (!window.Cloud) return;
+  $("loginError").textContent = "";
+  try { await window.Cloud.signUpEmail($("loginEmail").value.trim(), $("loginPassword").value); }
+  catch (err) { showLoginError(err); }
+});
+// ポップアップブロッカー対策のため、awaitを挟まず同期的に呼び出す
+$("btnGoogleSignIn").addEventListener("click", () => {
+  if (!window.Cloud) return;
+  $("loginError").textContent = "";
+  window.Cloud.signInGoogle().catch((err) => showLoginError(err));
+});
+$("btnLogout").addEventListener("click", () => {
+  if (!window.Cloud) return;
+  openConfirm("ログアウト", "ログアウトしますか？", () => window.Cloud.signOutUser());
+});
+
+// type="module"のFirebase初期化スクリプトは常に本体scriptより後に実行される
+// (moduleは常に遅延実行のため)。そのためwindow.Cloudが定義済みとは限らず、
+// "cloud-ready"イベントで完了を待ち合わせる。
+function whenCloudReady(fn) {
+  if (window.Cloud) { fn(); return; }
+  window.addEventListener("cloud-ready", fn, { once: true });
+}
+
 /* ---------------- 初期化 ---------------- */
-restoreLastOpen();
-resize();
-updateUndoRedoButtons();
-updateCompassVisual();
-showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます", true);
+// resize()はcanvasWrapの実寸(clientWidth/Height)を読むため、#appがdisplay:none
+// (未ログイン)の間に呼ぶと0×0になってしまう。ログインして#appを表示した
+// "後"に呼ぶ必要があるため、ここでは呼ばずonReadyのコールバック内で行う。
+whenCloudReady(() => {
+  window.Cloud.onReady(async (user) => {
+    if (!user) { hideAppUI(); return; }
+    showAppUI();
+    resize();
+    updateUndoRedoButtons();
+    updateCompassVisual();
+    try {
+      await window.Cloud.loadAllProjectsFromCloud(user.uid);
+    } catch (err) {
+      console.error("物件データの取得に失敗しました:", err);
+      if (!navigator.onLine) {
+        showHint("オフラインのため前回のデータを表示できません。電波の良い場所で一度ログインし直してください", true);
+      } else {
+        showHint("データの取得に失敗しました。時間をおいて再度お試しください", true);
+      }
+    }
+    window.Cloud.migrateLocalDataIfNeeded(); // ユーザーの回答を待たず先に進める
+    restoreLastOpen();
+    render();
+    showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます", true);
+  });
+});
 </script>
 </body>
 </html>
