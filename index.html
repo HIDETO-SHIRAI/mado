@@ -43,7 +43,6 @@
      縦方向のflexコンテナのため、そのまま置くと縦に伸びてしまう。固定させる。 */
   #loginGate .btn.google { flex: 0 0 auto; width: 100%; }
   #loginGate .input-error { min-height: 18px; }
-  #loginGate .login-hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 0 0 6px; }
   .link-btn {
     background: none; border: none; color: var(--accent); font-size: 13px;
     padding: 4px 2px; align-self: flex-start; flex: 0 0 auto; text-decoration: underline;
@@ -250,17 +249,16 @@
 <div class="modal-overlay fullpage show" id="loginGate">
   <div class="modal">
     <div class="page-body">
-      <h1>間取りメモ</h1>
-      <p class="login-sub">続けるにはログインしてください</p>
+      <h1 id="loginModeTitle">ログイン</h1>
+      <p class="login-sub" id="loginModeSub">続けるにはログインしてください</p>
       <input type="email" class="text-input" id="loginEmail" placeholder="メールアドレス" autocomplete="email">
       <input type="password" class="text-input" id="loginPassword" placeholder="パスワード(6文字以上)" autocomplete="current-password">
       <button class="link-btn" id="btnForgotPassword">パスワードをお忘れですか？</button>
       <div class="input-error" id="loginError"></div>
-      <p class="login-hint">上のメールアドレス・パスワードを入力し、初めての方は「新規登録」、登録済みの方は「ログイン」を押してください（別の画面には移りません）</p>
       <div class="modal-actions">
-        <button class="btn" id="btnSignUp">新規登録</button>
-        <button class="btn primary" id="btnSignIn">ログイン</button>
+        <button class="btn primary" id="btnLoginSubmit" style="width:100%;">ログイン</button>
       </div>
+      <button class="link-btn" id="btnToggleLoginMode" style="align-self:center;">アカウントをお持ちでない方はこちら（新規登録）</button>
       <div class="login-divider">または</div>
       <button class="btn google" id="btnGoogleSignIn">Googleでログイン</button>
       <p class="login-note">LINEやInstagramのアプリ内ブラウザからではなく、Safari/Chromeで開いてください（Googleログインが正しく動作しないことがあります）。</p>
@@ -3619,21 +3617,43 @@ function hideAppUI() {
   hideAllModalsAndBanners();
   $("app").classList.add("app-hidden");
   $("loginGate").classList.add("show");
+  setLoginMode("login");
+  $("loginEmail").value = ""; $("loginPassword").value = "";
 }
 function showLoginError(err) {
   $("loginError").textContent = (window.Cloud && window.Cloud.mapAuthError(err)) || "ログインに失敗しました。もう一度お試しください";
 }
-$("btnSignIn").addEventListener("click", async () => {
+// ログイン画面は「ログイン」「新規登録」を別画面のように切り替える(実体は同じ
+// メール/パスワード欄を使い回す1画面だが、見出し・ボタン・案内リンクを
+// 丸ごと入れ替えることで、別ページに遷移したように見せる)。
+let loginMode = "login";
+function setLoginMode(mode) {
+  loginMode = mode;
+  $("loginError").textContent = "";
+  if (mode === "signup") {
+    $("loginModeTitle").textContent = "新規登録";
+    $("loginModeSub").textContent = "メールアドレスとパスワードを決めて登録してください";
+    $("btnLoginSubmit").textContent = "新規登録";
+    $("btnToggleLoginMode").textContent = "すでにアカウントをお持ちの方はこちら（ログイン）";
+    $("btnForgotPassword").style.display = "none";
+  } else {
+    $("loginModeTitle").textContent = "ログイン";
+    $("loginModeSub").textContent = "続けるにはログインしてください";
+    $("btnLoginSubmit").textContent = "ログイン";
+    $("btnToggleLoginMode").textContent = "アカウントをお持ちでない方はこちら（新規登録）";
+    $("btnForgotPassword").style.display = "";
+  }
+}
+$("btnToggleLoginMode").addEventListener("click", () => setLoginMode(loginMode === "login" ? "signup" : "login"));
+$("btnLoginSubmit").addEventListener("click", async () => {
   if (!window.Cloud) return;
   $("loginError").textContent = "";
-  try { await window.Cloud.signInEmail($("loginEmail").value.trim(), $("loginPassword").value); }
-  catch (err) { showLoginError(err); }
-});
-$("btnSignUp").addEventListener("click", async () => {
-  if (!window.Cloud) return;
-  $("loginError").textContent = "";
-  try { await window.Cloud.signUpEmail($("loginEmail").value.trim(), $("loginPassword").value); }
-  catch (err) { showLoginError(err); }
+  const email = $("loginEmail").value.trim();
+  const password = $("loginPassword").value;
+  try {
+    if (loginMode === "signup") await window.Cloud.signUpEmail(email, password);
+    else await window.Cloud.signInEmail(email, password);
+  } catch (err) { showLoginError(err); }
 });
 // ポップアップブロッカー対策のため、awaitを挟まず同期的に呼び出す
 $("btnGoogleSignIn").addEventListener("click", () => {
