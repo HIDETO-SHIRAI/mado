@@ -331,7 +331,7 @@
       <label>大きさ</label>
       <div class="stepper">
         <button id="doorWidthMinus">−</button>
-        <div class="val"><span id="doorWidthValue">30</span><br><small>%</small></div>
+        <div class="val"><span id="doorWidthValue">77</span><br><small>cm</small></div>
         <button id="doorWidthPlus">＋</button>
       </div>
     </div>
@@ -420,6 +420,7 @@ const CLOSE_DIST_PX = 26; // 始点に戻ったとみなす画面上の許容距
 const AXIS_THRESHOLD_PX = 16; // なぞり描きで軸(水平/垂直)を判定する最小移動量
 const DOOR_HIT_RADIUS_PX = 16; // 既存建具をタップ選択する許容半径
 const FIXTURE_HIT_RADIUS_PX = 22; // トイレ等の設備アイコンをドラッグ開始するタップ許容半径
+const MIN_RATIO_GAP = 0.12; // 同一壁上で建具同士が近づける最小のratio差
 
 // 配色モード: "color"=部屋種別ごとに色分け(既定)、"simple"=WebCAD等の実例に
 // 近い、全室を単色(クリーム系)にして線とハッチング・アイコンだけで区別する
@@ -451,14 +452,20 @@ const ROOM_TYPES = [
 ];
 // 建具種別: 絵文字ではなく建築製図に準じた線記号(円弧・平行線)で描画する。
 // hinge系は開き戸(円弧+扉本体)、slide系は引き戸(平行線)、window系は窓(サッシ線)。
+// defaultWidthMasu: 実際の建具規格(調査済み)を1マス=910mm換算したおおよその
+// 既定幅。壁の長さに対する比率ではなく、この絶対値(マス単位)を基準に使う。
 const DOOR_TYPES = [
-  { key: "hinge", label: "片開き戸", group: "door" },
-  { key: "hinge_double", label: "両開き戸", group: "door" },
-  { key: "slide", label: "片引き戸", group: "door" },
-  { key: "slide_double", label: "引き違い戸", group: "door" },
-  { key: "window_slide", label: "引き違い窓", group: "window" },
-  { key: "window_fix", label: "FIX窓", group: "window" },
+  { key: "hinge", label: "片開き戸", group: "door", defaultWidthMasu: 0.85 },
+  { key: "hinge_double", label: "両開き戸", group: "door", defaultWidthMasu: 1.8 },
+  { key: "slide", label: "片引き戸", group: "door", defaultWidthMasu: 0.9 },
+  { key: "slide_double", label: "引き違い戸", group: "door", defaultWidthMasu: 1.85 },
+  { key: "window_slide", label: "引き違い窓", group: "window", defaultWidthMasu: 1.85 },
+  { key: "window_fix", label: "FIX窓", group: "window", defaultWidthMasu: 0.9 },
 ];
+function defaultWidthMasuForType(key) {
+  const t = DOOR_TYPES.find((x) => x.key === key);
+  return (t && t.defaultWidthMasu) || 0.85;
+}
 
 const $ = (id) => document.getElementById(id);
 const gridCanvas = $("grid");
@@ -545,18 +552,19 @@ function loadLastDoorPref() {
     const saved = JSON.parse(localStorage.getItem(LAST_DOOR_PREF_KEY));
     if (saved && saved.type) return saved;
   } catch { /* 保存値が壊れていれば既定値にフォールバック */ }
-  return { type: "hinge", widthRatio: 0.3, flip: false };
+  return { type: "hinge", widthMasu: defaultWidthMasuForType("hinge"), flip: false };
 }
 function saveLastDoorPref() {
-  localStorage.setItem(LAST_DOOR_PREF_KEY, JSON.stringify({ type: lastDoorType, widthRatio: lastDoorWidthRatio, flip: lastDoorFlip }));
+  localStorage.setItem(LAST_DOOR_PREF_KEY, JSON.stringify({ type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip }));
 }
 const initialDoorPref = loadLastDoorPref();
 let lastDoorType = initialDoorPref.type;
-let lastDoorWidthRatio = initialDoorPref.widthRatio;
+let lastDoorWidthMasu = initialDoorPref.widthMasu || defaultWidthMasuForType(initialDoorPref.type);
 let lastDoorFlip = initialDoorPref.flip;
 let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の状態
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
+let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
 
 let history = [], future = [];
 function snapshot() {
@@ -768,17 +776,10 @@ function drawHatchFill(room) {
   dctx.restore();
 }
 
-function roomScaleFactor(room) {
-  // 部屋の面積(画面px^2)に応じて建具アイコン等を縮小する係数(0.55〜1.0)
-  const areaPx = polygonScreenArea(room.points);
-  const refArea = (BASE_CELL * view.scale) * (BASE_CELL * view.scale) * 4; // 目安: 2x2マス
-  return Math.max(0.55, Math.min(1, Math.sqrt(areaPx / refArea)));
-}
-
 function fixtureScaleFactor(room) {
   // トイレ・洗面台・キッチン等の設備アイコン専用の拡大縮小係数(0.55〜1.6)。
-  // 建具(ドア)は壁の実寸に紐づくため roomScaleFactor(上限1.0)のままとし、
-  // 設備アイコンだけは広い部屋なら見合った大きさまで拡大されるようにする。
+  // 建具(ドア)は実寸(widthMasu)に紐づく絶対サイズで描画するため、この
+  // 部屋面積連動の縮小・拡大は設備アイコンにのみ適用する。
   const areaPx = polygonScreenArea(room.points);
   const refArea = (BASE_CELL * view.scale) * (BASE_CELL * view.scale) * 4; // 目安: 2x2マス
   return Math.max(0.55, Math.min(1.6, Math.sqrt(areaPx / refArea)));
@@ -800,8 +801,18 @@ function drawRoomPolygon(room) {
   dctx.stroke();
   if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
 
-  const scale = roomScaleFactor(room);
-  (room.doors || []).forEach((d) => drawDoorMark(room, d, scale));
+  // 建具(特に開き戸のスイング円弧)・設備アイコンが部屋の外(隣室側)へ描画
+  // はみ出さないよう、この部屋自身の多角形でクリップしてから描画する
+  // (角付近に開き戸を置いた際に円弧が隣の部屋へ入り込むバグの対策)。
+  dctx.save();
+  dctx.beginPath();
+  room.points.forEach((p, i) => {
+    const { x, y } = gridToScreen(p.gx, p.gy);
+    if (i === 0) dctx.moveTo(x, y); else dctx.lineTo(x, y);
+  });
+  dctx.closePath();
+  dctx.clip();
+  (room.doors || []).forEach((d) => drawDoorMark(room, d));
   if (room.typeKey === "kaidan") drawStairSymbol(room);
 
   const c = polygonCentroidScreen(room.points);
@@ -815,6 +826,7 @@ function drawRoomPolygon(room) {
     drawRoomFixture(room.typeKey, 0, 0, BASE_CELL * view.scale * fixtureScaleFactor(room));
     dctx.restore();
   }
+  dctx.restore();
 
   // 廊下など、室名も広さも表示する意味がない部屋種別はラベル描画自体を省略する
   if (type.noLabel) return;
@@ -1419,7 +1431,10 @@ function doorScreenPos(room, door) {
 
 // 建具の製図記号を描画する。壁(辺)の方向ベクトルを軸に、開き戸は円弧+扉本体、
 // 引き戸は平行2本線、窓はサッシ線(引き違いは中央仕切り線も)で表現する。
-function drawDoorMark(room, door, scale) {
+// 幅(doorWidth)は壁の長さに対する比率ではなく、door.widthMasu(実寸換算の
+// 絶対値・グリッド単位)をそのままpx変換した値を使う(壁が短い場合のみ、
+// 壁からはみ出さないようedgeLenの90%を上限にクランプする)。
+function drawDoorMark(room, door) {
   const p1 = room.points[door.edge];
   const p2 = room.points[(door.edge + 1) % room.points.length];
   const s1 = gridToScreen(p1.gx, p1.gy), s2 = gridToScreen(p2.gx, p2.gy);
@@ -1429,7 +1444,8 @@ function drawDoorMark(room, door, scale) {
   const nx = -uy, ny = ux; // 法線ベクトル(壁から室内側へ90度)
 
   const center = { x: s1.x + ux * edgeLen * door.ratio, y: s1.y + uy * edgeLen * door.ratio };
-  const doorWidth = Math.max(16, edgeLen * (door.widthRatio || 0.3)) * scale;
+  const widthMasu = Math.min(door.widthMasu || 0.85, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
+  const doorWidth = Math.max(16, widthMasu * BASE_CELL * view.scale);
   const a = { x: center.x - ux * doorWidth / 2, y: center.y - uy * doorWidth / 2 };
   const b = { x: center.x + ux * doorWidth / 2, y: center.y + uy * doorWidth / 2 };
   const type = door.type;
@@ -1449,7 +1465,7 @@ function drawDoorMark(room, door, scale) {
     else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false);
   } else if (type === "slide" || type === "slide_double") {
     // 引き戸: 壁厚の中に平行2本線。片引きは戸袋側(a方向)へ延長して引き込みを表現
-    const off = 2.5 * scale;
+    const off = 2.5;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
     dctx.lineTo(b.x + nx * off, b.y + ny * off);
@@ -1470,7 +1486,7 @@ function drawDoorMark(room, door, scale) {
     // window_slide / window_fix: 太い外壁線に埋もれて見えなくならないよう、まず
     // 壁を横切る白い帯で「開口部」をはっきり切り抜いてから、太めのサッシ線を描く
     // (マイソク品質評価で「窓が見当たらない」と複数回指摘されたための強調修正)。
-    const cutOff = 7 * scale;
+    const cutOff = 7;
     dctx.save();
     dctx.strokeStyle = "#ffffff";
     dctx.lineWidth = cutOff * 2;
@@ -1480,7 +1496,7 @@ function drawDoorMark(room, door, scale) {
     dctx.stroke();
     dctx.restore();
 
-    const off = 3.5 * scale;
+    const off = 3.5;
     dctx.lineWidth = 2.2;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
@@ -1585,6 +1601,27 @@ function hitTestEdge(room, screenX, screenY) {
     let t = ((screenX - s1.x) * dx + (screenY - s1.y) * dy) / (len * len);
     // 角に建具アイコンが被らないよう、端からアイコン半径+マージン分だけは避ける
     const marginRatio = Math.min(0.35, (18) / len);
+    t = Math.max(marginRatio, Math.min(1 - marginRatio, t));
+    const px = s1.x + dx * t, py = s1.y + dy * t;
+    const dist = Math.hypot(screenX - px, screenY - py);
+    if (dist < bestDist) { bestDist = dist; best = { edge: i, ratio: t }; }
+  });
+  return best;
+}
+
+// hitTestEdgeと違い距離の上限を設けない版。既存建具をドラッグ移動中は、
+// 指がどれだけ壁から離れても「その部屋で一番近い壁」へ必ず追従させたい
+// (掴んだ建具が急に無反応になるより、常に追従する方が自然なため)。
+function hitTestEdgeForDrag(room, screenX, screenY) {
+  let best = null, bestDist = Infinity;
+  room.points.forEach((p1, i) => {
+    const p2 = room.points[(i + 1) % room.points.length];
+    const s1 = gridToScreen(p1.gx, p1.gy), s2 = gridToScreen(p2.gx, p2.gy);
+    const dx = s2.x - s1.x, dy = s2.y - s1.y;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) return;
+    let t = ((screenX - s1.x) * dx + (screenY - s1.y) * dy) / (len * len);
+    const marginRatio = Math.min(0.35, 18 / len);
     t = Math.max(marginRatio, Math.min(1 - marginRatio, t));
     const px = s1.x + dx * t, py = s1.y + dy * t;
     const dist = Math.hypot(screenX - px, screenY - py);
@@ -1743,7 +1780,15 @@ function tryRoomSelectionTap(sx, sy) {
 function handleSingleTouchStart(sx, sy) {
   if (currentTool === "door") {
     const existing = hitTestExistingDoor(sx, sy);
-    if (existing) { openDoorEditModal(existing.room, existing.index); return; }
+    if (existing) {
+      // タップだけなら編集モーダル、そのままドラッグすれば壁沿いに移動、の
+      // どちらにもなれるよう、まずは「ドラッグ開始候補」として保持しておく
+      // (実際に動いたかどうかはpointermove/endPointer側で判定して分岐する)。
+      snapshot();
+      doorDrag = { room: existing.room, doorIndex: existing.index, moved: false };
+      render();
+      return;
+    }
     for (let i = state.rooms.length - 1; i >= 0; i--) {
       const hit = hitTestEdge(state.rooms[i], sx, sy);
       if (hit) { openDoorAddModal(state.rooms[i], hit); return; }
@@ -1841,6 +1886,25 @@ drawCanvas.addEventListener("pointermove", (e) => {
     const snapped = Math.round(angleDeg / 15) * 15;
     room.fixtureRotation = ((snapped % 360) + 360) % 360;
     render();
+    return;
+  }
+
+  if (doorDrag && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const room = doorDrag.room;
+    const hit = hitTestEdgeForDrag(room, sx, sy);
+    if (hit) {
+      // 同じ壁上の他の建具に近づきすぎる位置には移動させない(新規追加時と同じ制約)
+      const tooClose = room.doors.some((d, i) => i !== doorDrag.doorIndex && d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < MIN_RATIO_GAP);
+      if (!tooClose) {
+        const door = room.doors[doorDrag.doorIndex];
+        door.edge = hit.edge;
+        door.ratio = hit.ratio;
+        doorDrag.moved = true;
+        render();
+      }
+    }
     return;
   }
 
@@ -1943,6 +2007,46 @@ function commitPendingVertexOnRelease(sx, sy) {
   render();
 }
 
+// 頂点/設備アイコン/建具の各ドラッグ状態を、指を離した時点で確定させる共通処理。
+// タップ後すぐ離した場合(pendingSingleTouchの早期return)・通常のドラッグ完了
+// の両方から呼べるよう一本化してある。該当するドラッグが無ければfalseを返す。
+function finalizeActiveDrags() {
+  if (vertexDrag) {
+    const room = vertexDrag.room;
+    room.tatami = masuToTatami(polygonAreaMasu(room.points));
+    vertexDrag = null;
+    render(); autoSave();
+    syncStairToOtherFloors(room);
+    return true;
+  }
+  if (fixtureDrag) {
+    fixtureDrag = null;
+    render(); autoSave();
+    return true;
+  }
+  if (fixtureRotateDrag) {
+    fixtureRotateDrag = null;
+    render(); autoSave();
+    return true;
+  }
+  if (doorDrag) {
+    const { room, doorIndex, moved } = doorDrag;
+    doorDrag = null;
+    if (!moved) {
+      // 実質ドラッグしていない(=ただのタップだった)場合は、従来通り編集モーダルを開く
+      openDoorEditModal(room, doorIndex);
+      return true;
+    }
+    const interference = hasDoorInterference();
+    render(); autoSave();
+    if (interference) {
+      showHint("建具同士が開く向きで干渉している可能性があります。種類や向きを見直してください", true);
+    }
+    return true;
+  }
+  return false;
+}
+
 function endPointer(e) {
   pointers.delete(e.pointerId);
   if (pendingSingleTouch && pendingSingleTouch.pointerId === e.pointerId) {
@@ -1951,32 +2055,14 @@ function endPointer(e) {
     pendingSingleTouch = null;
     if (pointers.size === 0) {
       handleSingleTouchStart(sx, sy);
+      if (finalizeActiveDrags()) return;
       commitPendingVertexOnRelease();
     }
     return;
   }
   if (pointers.size < 2) pinch = null;
 
-  if (vertexDrag && pointers.size === 0) {
-    const room = vertexDrag.room;
-    room.tatami = masuToTatami(polygonAreaMasu(room.points));
-    vertexDrag = null;
-    render(); autoSave();
-    syncStairToOtherFloors(room);
-    return;
-  }
-
-  if (fixtureDrag && pointers.size === 0) {
-    fixtureDrag = null;
-    render(); autoSave();
-    return;
-  }
-
-  if (fixtureRotateDrag && pointers.size === 0) {
-    fixtureRotateDrag = null;
-    render(); autoSave();
-    return;
-  }
+  if (pointers.size === 0 && finalizeActiveDrags()) return;
 
   if (pointers.size === 0) {
     const rect = drawCanvas.getBoundingClientRect();
@@ -2237,6 +2323,9 @@ DOOR_TYPES.forEach((t) => {
   btn.innerHTML = `<span class="door-preview">${miniDoorPreviewSVG(t.key)}</span>${t.label}`;
   btn.addEventListener("click", () => {
     pendingDoor.type = t.key;
+    // 種別を切り替えたら、その種別の現実的な既定幅に合わせ直す(例: 片開き戸
+    // から引き違い戸に変えた際、狭いままだと不自然なため)。
+    pendingDoor.widthMasu = defaultWidthMasuForType(t.key);
     updateDoorModalUI();
   });
   doorTypeGrid.appendChild(btn);
@@ -2258,17 +2347,16 @@ function updateDoorModalUI() {
   updateFlipRowVisibility(pendingDoor.type);
   updateDoorTypeSelection(pendingDoor.type);
   $("doorWidthRow").style.display = "flex";
-  $("doorWidthValue").textContent = Math.round(pendingDoor.widthRatio * 100);
+  $("doorWidthValue").textContent = Math.round(pendingDoor.widthMasu * 91); // 1マス=910mm換算のcm表示
   if (pendingDoor.existingIndex >= 0) {
     const d = pendingDoor.room.doors[pendingDoor.existingIndex];
-    d.type = pendingDoor.type; d.widthRatio = pendingDoor.widthRatio; d.flip = pendingDoor.flip;
+    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip;
     render();
   }
 }
 
 function openDoorAddModal(room, hit) {
   const doors = room.doors || [];
-  const MIN_RATIO_GAP = 0.12;
   const tooClose = doors.some((d) => d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < MIN_RATIO_GAP);
   if (tooClose) {
     showHint("近くに建具があります。少し離してタップしてください");
@@ -2277,7 +2365,7 @@ function openDoorAddModal(room, hit) {
   // 直前に選んだ建具の種類・大きさを次回の初期値として引き継ぐ(同じ種類の建具を
   // 連続して付ける場面で、毎回種類を選び直さずそのまま「これで確定」だけで
   // 済むようにするため)。
-  pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthRatio: lastDoorWidthRatio, flip: lastDoorFlip };
+  pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip };
   $("doorModalTitle").textContent = "建具の種類";
   $("btnDeleteDoor").style.display = "none";
   updateDoorModalUI();
@@ -2286,7 +2374,7 @@ function openDoorAddModal(room, hit) {
 function openDoorEditModal(room, index) {
   const d = room.doors[index];
   snapshot(); // 編集開始前の状態を残す(やめる/undoで復元できるように)
-  pendingDoor = { room, existingIndex: index, type: d.type, widthRatio: d.widthRatio || 0.3, flip: !!d.flip, original: { ...d } };
+  pendingDoor = { room, existingIndex: index, type: d.type, widthMasu: d.widthMasu || defaultWidthMasuForType(d.type), flip: !!d.flip, original: { ...d } };
   $("doorModalTitle").textContent = "建具の種類を変更";
   $("btnDeleteDoor").style.display = "block";
   updateDoorModalUI();
@@ -2313,14 +2401,24 @@ $("btnFlipDoor").addEventListener("click", () => {
   pendingDoor.flip = !pendingDoor.flip;
   updateDoorModalUI();
 });
-$("doorWidthMinus").addEventListener("click", () => stepDoorWidth(-0.05));
-$("doorWidthPlus").addEventListener("click", () => stepDoorWidth(0.05));
+$("doorWidthMinus").addEventListener("click", () => stepDoorWidth(-0.1));
+$("doorWidthPlus").addEventListener("click", () => stepDoorWidth(0.1));
+// 幅の調整単位は0.1マス(≒9cm)刻み。壁からはみ出さないよう、その壁の長さの
+// 90%を上限にクランプする(新規追加時はhit.edge、既存編集時は現在のedgeを使う)。
+function pendingDoorEdgeLenMasu() {
+  const edge = pendingDoor.existingIndex >= 0 ? pendingDoor.room.doors[pendingDoor.existingIndex].edge : pendingDoor.edge;
+  const p1 = pendingDoor.room.points[edge];
+  const p2 = pendingDoor.room.points[(edge + 1) % pendingDoor.room.points.length];
+  return Math.hypot(p2.gx - p1.gx, p2.gy - p1.gy);
+}
 function stepDoorWidth(delta) {
-  pendingDoor.widthRatio = Math.max(0.1, Math.min(0.9, Math.round((pendingDoor.widthRatio + delta) * 100) / 100));
+  const maxW = Math.max(0.3, pendingDoorEdgeLenMasu() * 0.9);
+  pendingDoor.widthMasu = Math.max(0.3, Math.min(maxW, Math.round((pendingDoor.widthMasu + delta) * 10) / 10));
   updateDoorModalUI();
 }
 // 開き戸(hinge/hinge_double)の振れ込み範囲(グリッド単位)を、実際の描画
-// (drawDoorMark)と同じ計算式で、画面スケールに依存しない形で求める。
+// (drawDoorMark)と同じ幅(door.widthMasu、実寸換算の絶対値)を使って求める。
+// これにより見た目の建具幅と干渉判定の振れ込み半径が常に一致する。
 // 引き戸・窓は振れ込まないため対象外。
 function getDoorSwingWorld(room, door) {
   if (door.type !== "hinge" && door.type !== "hinge_double") return null;
@@ -2330,7 +2428,7 @@ function getDoorSwingWorld(room, door) {
   if (edgeLen < 0.01) return null;
   const ux = (p2.gx - p1.gx) / edgeLen, uy = (p2.gy - p1.gy) / edgeLen;
   const center = { gx: p1.gx + ux * edgeLen * door.ratio, gy: p1.gy + uy * edgeLen * door.ratio };
-  const doorWidth = Math.max(0.2, edgeLen * (door.widthRatio || 0.3));
+  const doorWidth = Math.max(0.2, Math.min(door.widthMasu || 0.85, edgeLen * 0.9));
   const a = { gx: center.gx - ux * doorWidth / 2, gy: center.gy - uy * doorWidth / 2 };
   const b = { gx: center.gx + ux * doorWidth / 2, gy: center.gy + uy * doorWidth / 2 };
   const hinge = door.flip ? b : a;
@@ -2362,9 +2460,9 @@ $("btnConfirmDoor").addEventListener("click", () => {
   if (pendingDoor.existingIndex < 0) {
     snapshot();
     if (!pendingDoor.room.doors) pendingDoor.room.doors = [];
-    pendingDoor.room.doors.push({ edge: pendingDoor.edge, ratio: pendingDoor.ratio, type: pendingDoor.type, widthRatio: pendingDoor.widthRatio, flip: pendingDoor.flip });
+    pendingDoor.room.doors.push({ edge: pendingDoor.edge, ratio: pendingDoor.ratio, type: pendingDoor.type, widthMasu: pendingDoor.widthMasu, flip: pendingDoor.flip });
     lastDoorType = pendingDoor.type;
-    lastDoorWidthRatio = pendingDoor.widthRatio;
+    lastDoorWidthMasu = pendingDoor.widthMasu;
     lastDoorFlip = pendingDoor.flip;
     saveLastDoorPref();
   }
@@ -2385,8 +2483,8 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null;
-    if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具をタップすると編集できます");
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; doorDrag = null;
+    if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動できます");
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
   });
@@ -2764,11 +2862,21 @@ function migrateDoorType(type) {
   if (type === "window") return "window_slide";
   return type;
 }
+// 旧バージョン(壁長に対する比率widthRatioで幅を決めていた頃)のデータを、
+// 実寸換算の絶対値widthMasuへ移行する。旧データの見た目をなるべく保つため、
+// その壁の当時の長さ×widthRatioをそのままwidthMasuとして引き継ぐ。
+function migrateDoorWidth(d, roomPoints) {
+  if (typeof d.widthMasu === "number") return d.widthMasu;
+  const p1 = roomPoints[d.edge], p2 = roomPoints[(d.edge + 1) % roomPoints.length];
+  const edgeLenMasu = (p1 && p2) ? Math.hypot(p2.gx - p1.gx, p2.gy - p1.gy) : 1;
+  const legacyRatio = typeof d.widthRatio === "number" ? d.widthRatio : 0.3;
+  return Math.max(0.3, Math.round(edgeLenMasu * legacyRatio * 10) / 10);
+}
 function normalizeFloorData(raw) {
   const data = Array.isArray(raw) ? { rooms: raw, northAngle: 0 } : { rooms: (raw && raw.rooms) || [], northAngle: (raw && raw.northAngle) || 0 };
   data.rooms = data.rooms.map((r) => ({
     ...r,
-    doors: (r.doors || []).map((d) => ({ ...d, type: migrateDoorType(d.type) })),
+    doors: (r.doors || []).map((d) => ({ ...d, type: migrateDoorType(d.type), widthMasu: migrateDoorWidth(d, r.points) })),
   }));
   return data;
 }
