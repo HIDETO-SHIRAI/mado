@@ -296,6 +296,7 @@
     <button class="tool" data-tool="door"><span class="em">🚪</span>建具</button>
     <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span id="colorSchemeLabel">配色:カラー</span></button>
     <button class="tool" id="btnExport"><span class="em">🖼️</span>画像で保存</button>
+    <button class="tool" id="btnExportTransparent"><span class="em">🎞️</span>透過で保存</button>
     <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span>全階まとめて保存</button>
     <button class="tool" id="btnSave"><span class="em">💾</span>この階を保存</button>
   </div>
@@ -2932,12 +2933,12 @@ function drawBuildingOutline(octx, w, h, scale, pad) {
 // 保存されてしまう(マイソク用途として致命的な)不具合があったため、保存の
 // 瞬間だけ一時的にキャンバスとビューを「全部屋がちょうど収まる表示」に切り替えて
 // 描画し、保存が終わったら元の表示状態に戻す。
-function buildExportCanvas(scale) {
+function buildExportCanvas(scale, transparent) {
   if (state.rooms.length === 0) {
     const empty = document.createElement("canvas");
     empty.width = W * scale; empty.height = H * scale;
     const ectx = empty.getContext("2d");
-    ectx.fillStyle = "#ffffff"; ectx.fillRect(0, 0, empty.width, empty.height);
+    if (!transparent) { ectx.fillStyle = "#ffffff"; ectx.fillRect(0, 0, empty.width, empty.height); }
     return empty;
   }
 
@@ -2970,7 +2971,7 @@ function buildExportCanvas(scale) {
   const out = document.createElement("canvas");
   out.width = contentW * scale + pad * 2; out.height = contentH * scale + pad * 2;
   const octx = out.getContext("2d");
-  octx.fillStyle = "#ffffff"; octx.fillRect(0, 0, out.width, out.height);
+  if (!transparent) { octx.fillStyle = "#ffffff"; octx.fillRect(0, 0, out.width, out.height); }
   drawBuildingOutline(octx, contentW * scale, contentH * scale, scale, pad);
   octx.drawImage(drawCanvas, pad, pad, contentW * scale, contentH * scale);
   drawCompassOnExport(octx, out.width, out.height, scale);
@@ -2990,13 +2991,13 @@ function buildExportCanvas(scale) {
 // 得るので、幅は一番広い階に合わせて中央寄せし、階ごとに見出し(1F等)を付ける。
 // buildExportCanvasはグローバルなstate.rooms/state.northAngleを見て描画する
 // ため、階ごとに一時的にstateを差し替えてから呼び出し、最後に元の状態へ戻す。
-function buildAllFloorsExportCanvas(scale) {
+function buildAllFloorsExportCanvas(scale, transparent) {
   autoSave(); // 今表示中の階の最新状態を確実にlocalStorageへ反映してから読む
 
   const all = loadAllProjects();
   const proj = all[state.projectName];
   const floorNames = proj && proj.floors ? Object.keys(proj.floors) : [];
-  if (floorNames.length === 0) return buildExportCanvas(scale);
+  if (floorNames.length === 0) return buildExportCanvas(scale, transparent);
 
   const savedRooms = state.rooms, savedNorth = state.northAngle, savedFloorName = state.floorName;
 
@@ -3005,7 +3006,7 @@ function buildAllFloorsExportCanvas(scale) {
     state.rooms = fd.rooms;
     state.northAngle = fd.northAngle;
     state.floorName = floorName;
-    return { floorName, canvas: buildExportCanvas(scale) };
+    return { floorName, canvas: buildExportCanvas(scale, transparent) };
   });
 
   state.rooms = savedRooms; state.northAngle = savedNorth; state.floorName = savedFloorName;
@@ -3020,8 +3021,7 @@ function buildAllFloorsExportCanvas(scale) {
   out.width = maxW;
   out.height = totalH;
   const octx = out.getContext("2d");
-  octx.fillStyle = "#ffffff";
-  octx.fillRect(0, 0, out.width, out.height);
+  if (!transparent) { octx.fillStyle = "#ffffff"; octx.fillRect(0, 0, out.width, out.height); }
 
   let y = 0;
   floorCanvases.forEach(({ floorName, canvas }, i) => {
@@ -3118,6 +3118,16 @@ $("btnExport").addEventListener("click", () => {
     const out = buildExportCanvas(2);
     const blob = dataUrlToBlob(out.toDataURL("image/png"));
     saveOrShareFile(blob, `${state.projectName}_${state.floorName}.png`);
+  } catch (err) {
+    console.error(err);
+    showHint(`画像の書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
+  }
+});
+$("btnExportTransparent").addEventListener("click", () => {
+  try {
+    const out = buildExportCanvas(2, true);
+    const blob = dataUrlToBlob(out.toDataURL("image/png"));
+    saveOrShareFile(blob, `${state.projectName}_${state.floorName}_透過.png`);
   } catch (err) {
     console.error(err);
     showHint(`画像の書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
