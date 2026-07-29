@@ -466,11 +466,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signInWithPopup, GoogleAuthProvider, signOut, sendPasswordResetEmail,
+  signInWithPopup, GoogleAuthProvider, signOut, sendPasswordResetEmail, deleteUser, getAdditionalUserInfo,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
-  collection, doc, getDocs, setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp,
+  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, deleteField, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
 
 // Firebaseの apiKey はサーバーの秘密鍵ではなく公開識別子であり、公開リポジトリに
@@ -506,6 +506,32 @@ function projectsCollectionRef() {
   return collection(db, "users", currentUid, "projects");
 }
 
+// 新規登録(メール/パスワードの新規登録・Googleでの初回サインイン)を、事前に
+// 管理者がFirebaseコンソールで許可しておいたメールアドレスだけに制限する。
+// allowEmails/{メールアドレス小文字} というドキュメントが存在するかどうかで判定する
+// (ドキュメントの中身は問わない。存在すること自体が「許可済み」の印)。
+// 既存ログイン(2回目以降のサインイン)は対象外(一覧から外しても即ログイン不可には
+// ならない仕様。アクセスを剥奪したい場合はFirebase Authのユーザー自体を管理者が
+// 手動で削除する運用とする)。
+async function isEmailAllowed(email) {
+  if (!email) return false;
+  try {
+    const key = email.trim().toLowerCase();
+    const snap = await getDoc(doc(db, "allowEmails", key));
+    return snap.exists();
+  } catch (err) {
+    // 確認自体に失敗した場合(ルール未設定・通信エラー等)は、誤って許可してしまう
+    // ことがないよう安全側(未許可)に倒す。
+    console.error("許可リストの確認に失敗しました(安全のため未許可として扱います):", err);
+    return false;
+  }
+}
+function notAllowedError() {
+  const err = new Error("このメールアドレスでの登録は許可されていません");
+  err.code = "app/not-allowed-email";
+  return err;
+}
+
 // Firebase Authのエラーコードを日本語の案内文に変換する。
 function mapAuthError(err) {
   const code = err && err.code;
@@ -521,6 +547,7 @@ function mapAuthError(err) {
     "auth/cancelled-popup-request": "ログインがキャンセルされました",
     "auth/account-exists-with-different-credential": "このメールアドレスは別の方法（パスワード等）で登録されています",
     "auth/unauthorized-domain": "このサイトのドメインがFirebase側で未承認のため、Googleログインを利用できません。管理者にご連絡ください",
+    "app/not-allowed-email": "このメールアドレスでの登録は許可されていません。管理者にご連絡ください",
   };
   if (code && table[code]) return table[code];
   console.error("未対応のFirebase認証エラー:", err);
@@ -684,7 +711,21 @@ function migrateLocalDataIfNeeded() {
 
 let readyCallback = null;
 let lastUser; // undefined = 未解決
+// Googleサインインは事前にメールアドレスが分からない(初回サインイン=アカウント
+// 作成が完了して初めて分かる)ため、許可リストの確認だけは事後に行わざるを得ない。
+// この確認中、Firebase自体はもう「ログイン済み」を通知してくるため、何もしないと
+// 確認が終わる前に一瞬アプリ本体が見えてしまう(実機検証で確認した不具合)。
+// 確認中はこのフラグでonAuthStateChangedの通知を一旦無視し、確認が確定した
+// (許可 or アカウント削除)後にsignInGoogle側から確定状態を明示的に反映する。
+let verifyingNewSignIn = false;
 onAuthStateChanged(auth, (user) => {
+  if (verifyingNewSignIn) return;
+  // 許可リスト確認後にsignUpEmail/signInGoogle側が確定状態を手動で反映した直後、
+  // deleteUser()等によって同じ状態変化(nullへ)がこの自然発火でも後追いで届くことが
+  // ある。何もしないと、手動反映の直後に表示したエラーメッセージ(hideAppUI内で
+  // クリアされる)を再度消してしまうため、実質的に状態が変わっていない場合は
+  // 何もしない。
+  if (user === lastUser) return;
   lastUser = user;
   if (!user) { currentUid = null; allProjectsCache = {}; }
   if (readyCallback) readyCallback(user);
@@ -710,10 +751,49 @@ window.Cloud = {
   migrateLocalDataIfNeeded,
   mapAuthError,
   async signInEmail(email, password) { return signInWithEmailAndPassword(auth, email, password); },
-  async signUpEmail(email, password) { return createUserWithEmailAndPassword(auth, email, password); },
+  // 許可リストのセキュリティルールは「認証済みユーザーのみ読める」ため、
+  // アカウント作成前(=まだ未認証)には確認できない。そのためGoogleと同じく
+  // 「作成→確認→不許可なら削除」の順にし、確認が終わるまでonAuthStateChangedの
+  // 通知を保留する(verifyingNewSignInフラグ)。
+  async signUpEmail(email, password) {
+    verifyingNewSignIn = true;
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      if (!(await isEmailAllowed(email))) {
+        await deleteUser(cred.user);
+        throw notAllowedError();
+      }
+      return cred;
+    } finally {
+      verifyingNewSignIn = false;
+      lastUser = auth.currentUser;
+      if (!lastUser) { currentUid = null; allProjectsCache = {}; }
+      if (readyCallback) readyCallback(lastUser);
+    }
+  },
   // ボタンのクリックハンドラから同期的に(awaitを挟まず)呼ぶこと。ポップアップ
   // ブロッカーに引っかからないよう、ユーザー操作の直接の結果である必要がある。
-  signInGoogle() { return signInWithPopup(auth, new GoogleAuthProvider()); },
+  // Googleは初回サインイン=アカウント作成が完了して初めてメールアドレスが
+  // 分かるため、事前チェックができない。確認が終わるまでonAuthStateChangedの
+  // 通知を保留し(verifyingNewSignInフラグ)、確定した状態を最後に手動で反映する。
+  signInGoogle() {
+    verifyingNewSignIn = true;
+    return signInWithPopup(auth, new GoogleAuthProvider()).then(async (result) => {
+      try {
+        const info = getAdditionalUserInfo(result);
+        if (info && info.isNewUser && !(await isEmailAllowed(result.user.email))) {
+          await deleteUser(result.user);
+          throw notAllowedError();
+        }
+        return result;
+      } finally {
+        verifyingNewSignIn = false;
+        lastUser = auth.currentUser; // 拒否されていればnull、許可されていれば当人
+        if (!lastUser) { currentUid = null; allProjectsCache = {}; }
+        if (readyCallback) readyCallback(lastUser);
+      }
+    });
+  },
   signOutUser() { return signOut(auth); },
   resetPassword(email) { return sendPasswordResetEmail(auth, email); },
 };
@@ -3655,21 +3735,37 @@ function setLoginMode(mode) {
   }
 }
 $("btnToggleLoginMode").addEventListener("click", () => setLoginMode(loginMode === "login" ? "signup" : "login"));
+// 新規登録は「作成→許可リスト確認→不許可なら削除」まで行うため、実測で数秒
+// かかることがある。無反応に見えて連打されないよう、処理中は明示的に表示する。
 $("btnLoginSubmit").addEventListener("click", async () => {
   if (!window.Cloud) return;
   $("loginError").textContent = "";
   const email = $("loginEmail").value.trim();
   const password = $("loginPassword").value;
+  $("btnLoginSubmit").disabled = true;
+  $("btnLoginSubmit").textContent = "処理中...";
   try {
     if (loginMode === "signup") await window.Cloud.signUpEmail(email, password);
     else await window.Cloud.signInEmail(email, password);
-  } catch (err) { showLoginError(err); }
+  } catch (err) {
+    showLoginError(err);
+  } finally {
+    $("btnLoginSubmit").disabled = false;
+    $("btnLoginSubmit").textContent = loginMode === "signup" ? "新規登録" : "ログイン";
+  }
 });
 // ポップアップブロッカー対策のため、awaitを挟まず同期的に呼び出す
 $("btnGoogleSignIn").addEventListener("click", () => {
   if (!window.Cloud) return;
   $("loginError").textContent = "";
-  window.Cloud.signInGoogle().catch((err) => showLoginError(err));
+  $("btnGoogleSignIn").disabled = true;
+  $("btnGoogleSignIn").textContent = "処理中...";
+  window.Cloud.signInGoogle()
+    .catch((err) => showLoginError(err))
+    .finally(() => {
+      $("btnGoogleSignIn").disabled = false;
+      $("btnGoogleSignIn").textContent = "Googleでログイン";
+    });
 });
 $("btnLogout").addEventListener("click", () => {
   if (!window.Cloud) return;
