@@ -2095,8 +2095,19 @@ function isExcludedFromTotal(room) {
   return !!(type && type.excludeFromTotal);
 }
 function updateTotals() {
+  const excludedRooms = state.rooms.filter((r) => isExcludedFromTotal(r));
   const countedRooms = state.rooms.filter((r) => !isExcludedFromTotal(r));
-  const total = countedRooms.reduce((s, r) => s + r.tatami, 0);
+  let total = countedRooms.reduce((s, r) => s + r.tatami, 0);
+  // 柱等のデッドスペースが、他の居室の内側(重なる位置)に描かれている場合は、
+  // 単に合計に加えないだけでなく、その居室の面積からデッドスペース分を
+  // 差し引く(居室のポリゴン自体は柱の分を除かずに畳数計算されているため、
+  // そのままでは専有面積を過大に数えてしまう)。バルコニー等、他の居室と
+  // 重ならない独立した空間として描かれている場合は、従来通り単に加えない。
+  excludedRooms.forEach((ex) => {
+    const centroid = polygonCentroidGrid(ex.points);
+    const overlapsCountedRoom = countedRooms.some((r) => isPointInPolygonGrid(centroid.gx, centroid.gy, r.points));
+    if (overlapsCountedRoom) total -= ex.tatami;
+  });
   $("totalTatami").textContent = Math.round(total * 2) / 2;
   $("roomCount").textContent = countedRooms.length;
   $("projectTitle").textContent = `${state.projectName} - ${state.floorName}`;
