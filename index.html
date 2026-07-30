@@ -2612,6 +2612,7 @@ function finalizeActiveDrags() {
     }
     const interference = hasDoorInterference();
     render(); autoSave();
+    ensureDoorVisible(room, room.doors[doorIndex]);
     if (interference) {
       showHint("建具同士が開く向きで干渉している可能性があります。種類や向きを見直してください", true);
     }
@@ -3094,7 +3095,39 @@ function hasDoorInterference() {
   return false;
 }
 
+// 建具(特に外開き)の扉本体・円弧は、今のパン/ズーム位置によっては画面(キャンバスの
+// 実際の描画範囲)の外へはみ出し、その部分が描画されない(canvasは自身の範囲外には
+// 何も描けないため)。実機で「外開きの建具の直線だけ消える」現象が報告されたが、
+// 根本原因が別環境で再現できなかったため、建具を追加・移動した直後に、その建具の
+// 振れ込み範囲が画面内に収まっているか確認し、はみ出していれば必要な分だけ自動で
+// パンして画面内に収める防御的な対策を入れる。
+function ensureDoorVisible(room, door) {
+  if (!room || !door) return;
+  if (door.type !== "hinge" && door.type !== "hinge_double") return;
+  const p1 = room.points[door.edge];
+  const p2 = room.points[(door.edge + 1) % room.points.length];
+  if (!p1 || !p2) return;
+  const s1 = gridToScreen(p1.gx, p1.gy), s2 = gridToScreen(p2.gx, p2.gy);
+  const edgeLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
+  if (edgeLen < 1) return;
+  const ux = (s2.x - s1.x) / edgeLen, uy = (s2.y - s1.y) / edgeLen;
+  const center = { x: s1.x + ux * edgeLen * door.ratio, y: s1.y + uy * edgeLen * door.ratio };
+  const widthMasu = Math.min(door.widthMasu || 0.85, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
+  const doorWidth = Math.max(16, widthMasu * BASE_CELL * view.scale);
+  const pad = 16;
+  const minX = center.x - doorWidth - pad, maxX = center.x + doorWidth + pad;
+  const minY = center.y - doorWidth - pad, maxY = center.y + doorWidth + pad;
+  let dx = 0, dy = 0;
+  if (minX < 0) dx = -minX; else if (maxX > W) dx = W - maxX;
+  if (minY < 0) dy = -minY; else if (maxY > H) dy = H - maxY;
+  if (dx !== 0 || dy !== 0) {
+    view.offX += dx; view.offY += dy;
+    drawGrid(); render();
+  }
+}
+
 $("btnConfirmDoor").addEventListener("click", () => {
+  const room = pendingDoor.room;
   if (pendingDoor.existingIndex < 0) {
     snapshot();
     if (!pendingDoor.room.doors) pendingDoor.room.doors = [];
@@ -3104,11 +3137,13 @@ $("btnConfirmDoor").addEventListener("click", () => {
     lastDoorFlip = pendingDoor.flip;
     saveLastDoorPref();
   }
+  const savedDoor = pendingDoor.existingIndex >= 0 ? room.doors[pendingDoor.existingIndex] : room.doors[room.doors.length - 1];
   // 既存編集の場合はupdateDoorModalUI()で既にroom.doorsへ反映済み
   const interference = hasDoorInterference();
   pendingDoor = null;
   hideModal("doorTypeModal");
   render(); autoSave();
+  ensureDoorVisible(room, savedDoor);
   if (interference) {
     showHint("建具同士が開く向きで干渉している可能性があります。種類や向きを見直してください", true);
   }
