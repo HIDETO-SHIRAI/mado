@@ -1874,12 +1874,12 @@ function drawDoorMark(room, door) {
 
   if (type === "hinge_double") {
     const half = doorWidth / 2;
-    drawHingeLeaf(a, ux, uy, nx, ny, half, flip);
-    drawHingeLeaf(b, -ux, -uy, nx, ny, half, flip);
+    drawHingeLeaf(a, ux, uy, nx, ny, half, flip, door.swingOut);
+    drawHingeLeaf(b, -ux, -uy, nx, ny, half, flip, door.swingOut);
   } else if (type === "hinge") {
     // flip=false: 吊元はa側(壁沿い正方向へ弧を描く)。flip=true: 吊元をb側にする
-    if (!flip) drawHingeLeaf(a, ux, uy, nx, ny, doorWidth, false);
-    else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false);
+    if (!flip) drawHingeLeaf(a, ux, uy, nx, ny, doorWidth, false, door.swingOut);
+    else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false, door.swingOut);
   } else if (type === "slide" || type === "slide_double") {
     // 引き戸: 壁厚の中に平行2本線。片引きは戸袋側(a方向)へ延長して引き込みを表現
     const off = 2.5;
@@ -1931,7 +1931,12 @@ function drawDoorMark(room, door) {
   dctx.restore();
 }
 
-function drawHingeLeaf(hinge, dirx, diry, nx, ny, len, flip) {
+// sweepReversed: 外開き(swingOut)で法線ベクトル(nx,ny)を反転させた際、円弧の
+// 掃引方向(counterclockwise)もあわせて反転させないと、90度の短い弧ではなく
+// 270度分(ほぼ一周)の長い弧を描いてしまう不具合があった(実機検証で発見)。
+// flip(吊元の左右)はtipの位置・角度の符号だけに使い、掃引方向はswingOutに
+// 連動するsweepReversedで別途制御する。
+function drawHingeLeaf(hinge, dirx, diry, nx, ny, len, flip, sweepReversed) {
   const sign = flip ? -1 : 1;
   const tipX = hinge.x + nx * len * sign, tipY = hinge.y + ny * len * sign;
   // 扉本体(吊元から開いた状態の先端まで)
@@ -1943,7 +1948,7 @@ function drawHingeLeaf(hinge, dirx, diry, nx, ny, len, flip) {
   const startAngle = Math.atan2(diry, dirx);
   const endAngle = Math.atan2(ny * sign, nx * sign);
   dctx.beginPath();
-  dctx.arc(hinge.x, hinge.y, len, startAngle, endAngle, flip);
+  dctx.arc(hinge.x, hinge.y, len, startAngle, endAngle, !!sweepReversed);
   dctx.stroke();
 }
 
