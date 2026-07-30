@@ -1328,7 +1328,10 @@ function drawRoomPolygon(room) {
     dctx.font = `${size}px -apple-system, sans-serif`;
     let widest = Math.max(...lns.map((l) => dctx.measureText(l).width));
     let blockH = lns.length * (size + 3);
-    while ((widest > maxAllowed || blockH > maxAllowedH) && size > 8) {
+    // 保存画像で「部屋名・畳数の文字が小さくて読みづらい」との指摘を受け、
+    // 縮小時の下限を8px→10pxに引き上げた(狭い部屋では多少はみ出しても、
+    // 読みやすさを優先する)。
+    while ((widest > maxAllowed || blockH > maxAllowedH) && size > 10) {
       size -= 1;
       dctx.font = `${size}px -apple-system, sans-serif`;
       widest = Math.max(...lns.map((l) => dctx.measureText(l).width));
@@ -1337,7 +1340,7 @@ function drawRoomPolygon(room) {
     return { lines: lns, size, fits: widest <= maxAllowed && blockH <= maxAllowedH };
   }
 
-  const startSize = areaPx < 2400 ? 11 : 13;
+  const startSize = areaPx < 2400 ? 13 : 15;
   let result = fitLines(areaPx < 1600 ? `${room.tatami}帖` : `${type.label}\n${room.tatami}帖`, startSize);
   if (!result.fits && result.lines.length > 1) {
     result = fitLines(`${room.tatami}帖`, startSize);
