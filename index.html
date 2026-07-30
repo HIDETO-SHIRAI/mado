@@ -1881,13 +1881,17 @@ function drawDoorMark(room, door) {
   dctx.lineWidth = 1.8 * zs;
 
   if (type === "hinge_double") {
+    // b側の葉はdirx,diryが(-ux,-uy)と鏡映されているため、開始角が180度ずれる。
+    // 同じsweepReversedをそのまま使うと必ずどちらか一方が270度分の長い弧に
+    // なってしまうため、鏡映されている葉だけ掃引方向を反転させる(下のsweepReversed注記を参照)。
     const half = doorWidth / 2;
     drawHingeLeaf(a, ux, uy, nx, ny, half, flip, door.swingOut);
-    drawHingeLeaf(b, -ux, -uy, nx, ny, half, flip, door.swingOut);
+    drawHingeLeaf(b, -ux, -uy, nx, ny, half, flip, !door.swingOut);
   } else if (type === "hinge") {
     // flip=false: 吊元はa側(壁沿い正方向へ弧を描く)。flip=true: 吊元をb側にする
+    // (b側はdirx,diryが鏡映されるため、hinge_double同様sweepReversedを反転させる)
     if (!flip) drawHingeLeaf(a, ux, uy, nx, ny, doorWidth, false, door.swingOut);
-    else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false, door.swingOut);
+    else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false, !door.swingOut);
   } else if (type === "slide") {
     // 片引き戸: 壁厚の中に平行2本線+戸袋側(a方向)への破線延長で引き込みを表現
     const off = 3.2 * zs;
@@ -1964,6 +1968,10 @@ function drawDoorMark(room, door) {
 // 270度分(ほぼ一周)の長い弧を描いてしまう不具合があった(実機検証で発見)。
 // flip(吊元の左右)はtipの位置・角度の符号だけに使い、掃引方向はswingOutに
 // 連動するsweepReversedで別途制御する。
+// 呼び出し側でdirx,diryを鏡映(-ux,-uy)して渡す場合(hinge_doubleのb側の葉、
+// hingeのflip=true時)は、startAngleが180度ずれるため、同じ論理のsweepReversedを
+// そのまま渡すと必ず270度分の長い弧になってしまう。呼び出し側で!door.swingOutを
+// 渡すことで対応する(再調査で「両開き戸が常に非対称に壊れる」バグとして発見)。
 function drawHingeLeaf(hinge, dirx, diry, nx, ny, len, flip, sweepReversed) {
   const sign = flip ? -1 : 1;
   const tipX = hinge.x + nx * len * sign, tipY = hinge.y + ny * len * sign;
