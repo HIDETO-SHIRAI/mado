@@ -878,10 +878,12 @@ const ROOM_TYPES = [
   // 意図して描いた通路なのか単なる余白なのか判別しづらいという指摘があったため、
   // 色相は無彩色のまま(廊下らしい控えめさは保ちつつ)濃さだけを強めた(再調査で発見)。
   { key: "rouka", label: "廊下", em: "🚶", color: "#e9eaec", stroke: "#9aa1ab", noLabel: true },
-  { key: "wc", label: "トイレ", em: "🚽", color: "#e0f7fa", stroke: "#4dd0e1" },
-  { key: "yokushitsu", label: "浴室", em: "🛁", color: "#e1f5fe", stroke: "#4fc3f7" },
-  { key: "senmen", label: "洗面所", em: "🚰", color: "#e8f5e9", stroke: "#81c784" },
-  { key: "oshiire", label: "押入", em: "📦", color: "#fdf6e3", stroke: "#d6c26a" },
+  // トイレ・浴室・洗面所・押入は、畳数を表示せず室名だけにする(hideTatami)。
+  // ただし合計畳数の計算には引き続き含める(excludeFromTotalとは異なる)。
+  { key: "wc", label: "トイレ", em: "🚽", color: "#e0f7fa", stroke: "#4dd0e1", hideTatami: true },
+  { key: "yokushitsu", label: "浴室", em: "🛁", color: "#e1f5fe", stroke: "#4fc3f7", hideTatami: true },
+  { key: "senmen", label: "洗面所", em: "🚰", color: "#e8f5e9", stroke: "#81c784", hideTatami: true },
+  { key: "oshiire", label: "押入", em: "📦", color: "#fdf6e3", stroke: "#d6c26a", hideTatami: true },
   { key: "shuno", label: "収納", em: "🗄️", color: "#f5f0e3", stroke: "#c9a96a" },
   { key: "wic", label: "WIC", em: "👚", color: "#f3ecf8", stroke: "#a985c9" },
   { key: "kaidan", label: "階段", em: "🪜", color: "#eef1f4", stroke: "#8b96a3" },
@@ -1341,9 +1343,15 @@ function drawRoomPolygon(room) {
   }
 
   const startSize = areaPx < 2400 ? 13 : 15;
-  let result = fitLines(areaPx < 1600 ? `${room.tatami}帖` : `${type.label}\n${room.tatami}帖`, startSize);
-  if (!result.fits && result.lines.length > 1) {
-    result = fitLines(`${room.tatami}帖`, startSize);
+  let result;
+  if (type.hideTatami) {
+    // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
+    result = fitLines(type.label, startSize);
+  } else {
+    result = fitLines(areaPx < 1600 ? `${room.tatami}帖` : `${type.label}\n${room.tatami}帖`, startSize);
+    if (!result.fits && result.lines.length > 1) {
+      result = fitLines(`${room.tatami}帖`, startSize);
+    }
   }
   dctx.font = `${result.size}px -apple-system, sans-serif`;
   dctx.textAlign = "center"; dctx.textBaseline = "middle";
