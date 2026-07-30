@@ -890,7 +890,7 @@ const ROOM_TYPES = [
   // 合わせ、合計畳数・部屋数のどちらにも数えない(excludeFromTotal)。見た目は
   // 押入等と同じ斜線ハッチングにし、「主要な居室ではない」ことを示す。
   { key: "veranda", label: "ベランダ", em: "🌤️", color: "#eef2f5", stroke: "#9fb3c2", excludeFromTotal: true },
-  { key: "deadspace", label: "デッドスペース", em: "⬛", color: "#dcdee1", stroke: "#7a828a", excludeFromTotal: true },
+  { key: "deadspace", label: "デッドスペース", em: "⬛", color: "#dcdee1", stroke: "#7a828a", excludeFromTotal: true, noLabel: true },
   { key: "sonota", label: "その他", em: "▫️", color: "#f0f0f0", stroke: "#b0b0b0" },
 ];
 // 建具種別: 絵文字ではなく建築製図に準じた線記号(円弧・平行線)で描画する。
