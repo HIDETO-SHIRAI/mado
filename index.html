@@ -398,6 +398,16 @@
         <button id="doorWidthPlus">＋</button>
       </div>
     </div>
+    <!-- キャンバス上でのドラッグ移動(タップ→少し待つ→ドラッグ、という操作)が
+         分かりにくい・苦手という実機フィードバックを受け、幅調整と同じボタン
+         操作だけで壁沿いの位置を動かせるようにする -->
+    <div class="field-row" id="doorPositionRow">
+      <label>壁に沿って動かす</label>
+      <div class="stepper">
+        <button id="doorPosMinus">−</button>
+        <button id="doorPosPlus">＋</button>
+      </div>
+    </div>
     <div class="flip-row row-hidden" id="doorFlipRow">
       <label>開く向き・引き込む向きを反転</label>
       <button class="iconbtn" id="btnFlipDoor">⇄</button>
@@ -2892,13 +2902,29 @@ function updateFlipRowVisibility(typeKey) {
   const flippable = typeKey === "hinge" || typeKey === "slide";
   $("doorFlipRow").classList.toggle("row-hidden", !flippable);
 }
+// 内開き/外開きボタンに、テキストだけでなく実際の盤面と同じ見た目(壁線+弧)の
+// 小アイコンを添える。「内開き」「外開き」という言葉だけでは伝わりにくいという
+// 実機フィードバックを受け、青い帯(室内側)の中に弧が描かれれば内開き、外に
+// はみ出せば外開き、と直感的に見て分かるようにする(盤面の配色をそのまま流用)。
+function swingToggleIconSVG(isOut) {
+  const common = `viewBox="0 0 40 30" width="26" height="20"`;
+  const roomBand = `<rect x="0" y="15" width="40" height="15" fill="#eaf1ff"/>`;
+  const wallLine = `<path d="M0 15 L40 15" stroke="#1c2733" stroke-width="2"/>`;
+  const leaf = isOut
+    ? `<path d="M6 15 L6 2" stroke="#1c2733" stroke-width="1.3" fill="none"/><path d="M6 15 A13 13 0 0 1 19 2" stroke="#1c2733" stroke-width="1.1" fill="none"/>`
+    : `<path d="M6 15 L6 28" stroke="#1c2733" stroke-width="1.3" fill="none"/><path d="M6 15 A13 13 0 0 0 19 28" stroke="#1c2733" stroke-width="1.1" fill="none"/>`;
+  return `<svg ${common}>${roomBand}${wallLine}${leaf}</svg>`;
+}
 // 開き戸(hinge/hinge_double)は、内開き/外開きをドラッグだけでなくモーダルからも
 // 直接切り替えられるようにする(共有壁で意図した側に開かせたい場合や、ドラッグの
 // 未文書化な挙動に頼らず確実に切り替えたい場合のため)。
 function updateSwingRowVisibility(typeKey) {
   const swingable = typeKey === "hinge" || typeKey === "hinge_double";
   $("doorSwingRow").classList.toggle("row-hidden", !swingable);
-  if (swingable) $("btnToggleSwingOut").textContent = pendingDoor.swingOut ? "外開き" : "内開き";
+  if (swingable) {
+    const out = pendingDoor.swingOut;
+    $("btnToggleSwingOut").innerHTML = `${swingToggleIconSVG(out)}<span class="cap">${out ? "外開き" : "内開き"}</span>`;
+  }
 }
 function updateDoorTypeSelection(typeKey) {
   doorTypeGrid.querySelectorAll(".room-type-btn").forEach((btn) => {
@@ -2988,6 +3014,29 @@ function stepDoorWidth(delta) {
   const maxW = Math.max(0.3, pendingDoorEdgeLenMasu() * 0.9);
   pendingDoor.widthMasu = Math.max(0.3, Math.min(maxW, Math.round((pendingDoor.widthMasu + delta) * 10) / 10));
   updateDoorModalUI();
+}
+$("doorPosMinus").addEventListener("click", () => stepDoorPosition(-1));
+$("doorPosPlus").addEventListener("click", () => stepDoorPosition(1));
+// キャンバス上のドラッグ(タップして少し待ってからドラッグ、という操作)が
+// 分かりにくい・苦手という実機フィードバックを受けて追加した、ボタンだけで
+// 建具を壁沿いに動かせる機能。1回あたり壁の長さによらず一定の絶対距離(0.15マス)
+// だけ動かす(幅ボタンの0.1マス刻みと同じ考え方)。既存建具の編集中はroom.doors側を
+// 直接動かしてその場でプレビューし、新規追加中はpendingDoor側を動かす。
+const DOOR_POS_STEP_MASU = 0.15;
+function stepDoorPosition(dirSign) {
+  const isExisting = pendingDoor.existingIndex >= 0;
+  const target = isExisting ? pendingDoor.room.doors[pendingDoor.existingIndex] : pendingDoor;
+  const edge = target.edge;
+  const edgeLenMasu = pendingDoorEdgeLenMasu();
+  if (edgeLenMasu < 0.01) return;
+  const marginRatio = Math.min(0.35, 0.3 / edgeLenMasu);
+  let newRatio = target.ratio + (DOOR_POS_STEP_MASU / edgeLenMasu) * dirSign;
+  newRatio = Math.max(marginRatio, Math.min(1 - marginRatio, newRatio));
+  const others = pendingDoor.room.doors.filter((d, i) => !(isExisting && i === pendingDoor.existingIndex));
+  const tooClose = others.some((d) => d.edge === edge && Math.abs(d.ratio - newRatio) < minRatioGapFor(pendingDoor.room, edge, d, target.widthMasu, target.type));
+  if (tooClose) { showHint("これ以上は隣の建具に近づけません"); return; }
+  target.ratio = newRatio;
+  render();
 }
 // 開き戸(hinge/hinge_double)の振れ込み範囲(グリッド単位)を、実際の描画
 // (drawDoorMark)と同じ幅(door.widthMasu、実寸換算の絶対値)を使って求める。
