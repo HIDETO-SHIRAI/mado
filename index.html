@@ -2033,14 +2033,25 @@ function drawDoorMark(room, door) {
 // hingeのflip=true時)は、startAngleが180度ずれるため、同じ論理のsweepReversedを
 // そのまま渡すと必ず270度分の長い弧になってしまう。呼び出し側で!door.swingOutを
 // 渡すことで対応する(再調査で「両開き戸が常に非対称に壊れる」バグとして発見)。
+// 座標を0.5px単位に丸めることで、扉本体の直線(細い・短い)がcanvasの
+// アンチエイリアスによって特定のズーム/パン位置でごく薄く(見えなくなる
+// ほど)なることがあった不具合を防ぐ(「たまに弧だけになる、直線が無い」と
+// 実機で報告された)。円弧に比べて直線は描画範囲が小さく、線が2ピクセル行に
+// またがってぼやけると視認性への影響が大きいため、この直線側だけ座標を
+// スナップして常にくっきり1本の線として描かれるようにする。
+function snapHalfPx(v) { return Math.round(v - 0.5) + 0.5; }
 function drawHingeLeaf(hinge, dirx, diry, nx, ny, len, flip, sweepReversed) {
   const sign = flip ? -1 : 1;
   const tipX = hinge.x + nx * len * sign, tipY = hinge.y + ny * len * sign;
-  // 扉本体(吊元から開いた状態の先端まで)
+  // 扉本体(吊元から開いた状態の先端まで)。線幅は最低2pxを確保し、細すぎて
+  // アンチエイリアスで薄くなるのを防ぐ(円弧側の線幅はここでは変えない)。
+  dctx.save();
+  dctx.lineWidth = Math.max(2, dctx.lineWidth);
   dctx.beginPath();
-  dctx.moveTo(hinge.x, hinge.y);
-  dctx.lineTo(tipX, tipY);
+  dctx.moveTo(snapHalfPx(hinge.x), snapHalfPx(hinge.y));
+  dctx.lineTo(snapHalfPx(tipX), snapHalfPx(tipY));
   dctx.stroke();
+  dctx.restore();
   // 開閉軌跡(円弧): 壁沿い(閉じた状態)から法線方向(開いた状態)まで
   const startAngle = Math.atan2(diry, dirx);
   const endAngle = Math.atan2(ny * sign, nx * sign);
