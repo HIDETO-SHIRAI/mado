@@ -1868,9 +1868,17 @@ function drawDoorMark(room, door) {
   const b = { x: center.x + ux * doorWidth / 2, y: center.y + uy * doorWidth / 2 };
   const flip = !!door.flip;
 
+  // 窓(window_slide/window_fix)はドア系と色を分け、盤面上でも種類の
+  // グループが一目で分かるようにする(調査で「4種類が壁の上の線にしか
+  // 見えず区別しにくい」と指摘されたための強調修正)。
+  // オフセット距離・線幅はview.scaleに連動させる(doorWidthと同様)。そうしないと
+  // ピンチズームで壁や建具全体が拡大されても、この隙間だけ画面上で一定幅のままとなり、
+  // ズームインするほど相対的に細く・見分けにくくなってしまう。
+  const isWindow = type === "window_slide" || type === "window_fix";
+  const zs = Math.max(0.7, view.scale);
   dctx.save();
-  dctx.strokeStyle = "#1c2733";
-  dctx.lineWidth = 1.4;
+  dctx.strokeStyle = isWindow ? "#1565c0" : "#1c2733";
+  dctx.lineWidth = 1.8 * zs;
 
   if (type === "hinge_double") {
     const half = doorWidth / 2;
@@ -1880,30 +1888,40 @@ function drawDoorMark(room, door) {
     // flip=false: 吊元はa側(壁沿い正方向へ弧を描く)。flip=true: 吊元をb側にする
     if (!flip) drawHingeLeaf(a, ux, uy, nx, ny, doorWidth, false, door.swingOut);
     else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false, door.swingOut);
-  } else if (type === "slide" || type === "slide_double") {
-    // 引き戸: 壁厚の中に平行2本線。片引きは戸袋側(a方向)へ延長して引き込みを表現
-    const off = 2.5;
+  } else if (type === "slide") {
+    // 片引き戸: 壁厚の中に平行2本線+戸袋側(a方向)への破線延長で引き込みを表現
+    const off = 3.2 * zs;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
     dctx.lineTo(b.x + nx * off, b.y + ny * off);
     dctx.moveTo(a.x - nx * off, a.y - ny * off);
     dctx.lineTo(b.x - nx * off, b.y - ny * off);
     dctx.stroke();
-    if (type === "slide") {
-      const ext = flip ? { x: b.x + ux * doorWidth * 0.9, y: b.y + uy * doorWidth * 0.9 } : { x: a.x - ux * doorWidth * 0.9, y: a.y - uy * doorWidth * 0.9 };
-      const base = flip ? b : a;
-      dctx.setLineDash([3, 3]);
+    const ext = flip ? { x: b.x + ux * doorWidth * 0.9, y: b.y + uy * doorWidth * 0.9 } : { x: a.x - ux * doorWidth * 0.9, y: a.y - uy * doorWidth * 0.9 };
+    const base = flip ? b : a;
+    dctx.setLineDash([3, 3]);
+    dctx.beginPath();
+    dctx.moveTo(base.x + nx * off, base.y + ny * off);
+    dctx.lineTo(ext.x + nx * off, ext.y + ny * off);
+    dctx.stroke();
+    dctx.setLineDash([]);
+  } else if (type === "slide_double") {
+    // 引き違い戸: 2枚の障子が別々の溝を通ることを示すため、間隔を大きく
+    // 広げた2組(計4本)の平行線にし、片引き戸(2本)とはっきり区別する
+    [2.2, 6.2].forEach((off0) => {
+      const off = off0 * zs;
       dctx.beginPath();
-      dctx.moveTo(base.x + nx * off, base.y + ny * off);
-      dctx.lineTo(ext.x + nx * off, ext.y + ny * off);
+      dctx.moveTo(a.x + nx * off, a.y + ny * off);
+      dctx.lineTo(b.x + nx * off, b.y + ny * off);
+      dctx.moveTo(a.x - nx * off, a.y - ny * off);
+      dctx.lineTo(b.x - nx * off, b.y - ny * off);
       dctx.stroke();
-      dctx.setLineDash([]);
-    }
+    });
   } else {
     // window_slide / window_fix: 太い外壁線に埋もれて見えなくならないよう、まず
     // 壁を横切る白い帯で「開口部」をはっきり切り抜いてから、太めのサッシ線を描く
     // (マイソク品質評価で「窓が見当たらない」と複数回指摘されたための強調修正)。
-    const cutOff = 7;
+    const cutOff = 8 * zs;
     dctx.save();
     dctx.strokeStyle = "#ffffff";
     dctx.lineWidth = cutOff * 2;
@@ -1913,8 +1931,8 @@ function drawDoorMark(room, door) {
     dctx.stroke();
     dctx.restore();
 
-    const off = 3.5;
-    dctx.lineWidth = 2.2;
+    const off = 4.5 * zs;
+    dctx.lineWidth = 2.6 * zs;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
     dctx.lineTo(b.x + nx * off, b.y + ny * off);
@@ -1922,9 +1940,19 @@ function drawDoorMark(room, door) {
     dctx.lineTo(b.x - nx * off, b.y - ny * off);
     dctx.stroke();
     if (type === "window_slide") {
+      // 引き違い窓: 中央に仕切り線を入れ、2枚の障子が引き違うことを表現
       dctx.beginPath();
       dctx.moveTo(center.x + nx * off, center.y + ny * off);
       dctx.lineTo(center.x - nx * off, center.y - ny * off);
+      dctx.stroke();
+    } else {
+      // FIX窓: 中央の仕切りは無い代わりに、両端を閉じて1枚の固定窓である
+      // ことを示す(引き違い窓との違いを見た目でも分かりやすくする)
+      dctx.beginPath();
+      dctx.moveTo(a.x + nx * off, a.y + ny * off);
+      dctx.lineTo(a.x - nx * off, a.y - ny * off);
+      dctx.moveTo(b.x + nx * off, b.y + ny * off);
+      dctx.lineTo(b.x - nx * off, b.y - ny * off);
       dctx.stroke();
     }
   }
@@ -2755,9 +2783,12 @@ function miniDoorPreviewSVG(key) {
   if (key === "hinge") return `<svg ${common}><path d="M6 30 L54 30" stroke="#c7ced6" stroke-width="2"/><path d="M6 30 L6 4" stroke="#1c2733" stroke-width="1.6" fill="none"/><path d="M6 30 A26 26 0 0 0 32 4" stroke="#1c2733" stroke-width="1.2" fill="none"/></svg>`;
   if (key === "hinge_double") return `<svg ${common}><path d="M6 30 L54 30" stroke="#c7ced6" stroke-width="2"/><path d="M6 30 L6 8" stroke="#1c2733" stroke-width="1.6" fill="none"/><path d="M6 30 A22 22 0 0 0 28 8" stroke="#1c2733" stroke-width="1.2" fill="none"/><path d="M54 30 L54 8" stroke="#1c2733" stroke-width="1.6" fill="none"/><path d="M54 30 A22 22 0 0 1 32 8" stroke="#1c2733" stroke-width="1.2" fill="none"/></svg>`;
   if (key === "slide") return `<svg ${common}><path d="M2 12 L54 12" stroke="#1c2733" stroke-width="1.4"/><path d="M2 22 L54 22" stroke="#1c2733" stroke-width="1.4"/><path d="M2 12 L-6 12 M2 22 L-6 22" stroke="#1c2733" stroke-width="1.4" stroke-dasharray="2,2" transform="translate(8,0)"/></svg>`;
-  if (key === "slide_double") return `<svg ${common}><path d="M6 12 L54 12" stroke="#1c2733" stroke-width="1.4"/><path d="M6 22 L54 22" stroke="#1c2733" stroke-width="1.4"/></svg>`;
-  if (key === "window_slide") return `<svg ${common}><path d="M6 10 L54 10" stroke="#1c2733" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1c2733" stroke-width="1.3"/><path d="M30 10 L30 24" stroke="#1c2733" stroke-width="1.3"/></svg>`;
-  return `<svg ${common}><path d="M6 10 L54 10" stroke="#1c2733" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1c2733" stroke-width="1.3"/></svg>`; // window_fix
+  // 引き違い戸: 2枚の障子が別々の溝を通ることを示す4本線(片引き戸の2本と区別)
+  if (key === "slide_double") return `<svg ${common}><path d="M6 7 L54 7" stroke="#1c2733" stroke-width="1.4"/><path d="M6 14 L54 14" stroke="#1c2733" stroke-width="1.4"/><path d="M6 20 L54 20" stroke="#1c2733" stroke-width="1.4"/><path d="M6 27 L54 27" stroke="#1c2733" stroke-width="1.4"/></svg>`;
+  // 窓は色をドア系(#1c2733)と分け、盤面と同じ配色(#1565c0)にする
+  if (key === "window_slide") return `<svg ${common}><path d="M6 10 L54 10" stroke="#1565c0" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1565c0" stroke-width="1.3"/><path d="M30 10 L30 24" stroke="#1565c0" stroke-width="1.3"/></svg>`;
+  // FIX窓: 中央の仕切りが無い代わりに両端を閉じ、1枚の固定窓であることを示す
+  return `<svg ${common}><path d="M6 10 L54 10" stroke="#1565c0" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1565c0" stroke-width="1.3"/><path d="M6 10 L6 24" stroke="#1565c0" stroke-width="1.3"/><path d="M54 10 L54 24" stroke="#1565c0" stroke-width="1.3"/></svg>`; // window_fix
 }
 
 DOOR_TYPES.forEach((t) => {
