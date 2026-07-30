@@ -237,9 +237,33 @@
     pointer-events: none; transition: opacity .3s;
   }
 
-  .door-btn-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+  /* 建具種類グリッドは6種類が2段になり、小さい画面(iPhone SE等)では2段目が
+     グリッド内部スクロールの下に隠れてしまう。スクロールバーの無い実機では
+     「まだ下に項目がある」ことに気づけないため、CSSのみでスクロール位置に
+     連動した影(スクロールシャドウ)を上下に出し、隠れた続きがあることを示す
+     (JSでの検知不要。実機再調査で指摘された問題への対応)。 */
+  .door-btn-row {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; flex: 1 1 auto; overflow-y: auto; min-height: 0;
+    background:
+      linear-gradient(var(--panel) 30%, rgba(255,255,255,0)) local,
+      linear-gradient(rgba(255,255,255,0), var(--panel) 70%) 0 100% local,
+      linear-gradient(to bottom, rgba(28,39,51,.16), rgba(28,39,51,0)) 0 0,
+      linear-gradient(to top, rgba(28,39,51,.16), rgba(28,39,51,0)) 0 100%;
+    background-repeat: no-repeat;
+    background-size: 100% 36px, 100% 36px, 100% 12px, 100% 12px;
+    background-attachment: local, local, scroll, scroll;
+  }
   .door-preview { width: 100%; height: 34px; margin-bottom: 2px; }
-  .flip-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 2px; }
+  /* 建具種類を切り替えるたびに反転行・内開き/外開き行がdisplay:noneでいきなり
+     消えたり出たりすると、故障のように見えて紛らわしい(再調査で指摘)。
+     transitionできるopacity/max-heightで滑らかに畳むことで、対象外の建具に
+     切り替えたとわかりやすくする。 */
+  .flip-row {
+    display: flex; align-items: center; justify-content: space-between; padding: 8px 2px;
+    max-height: 44px; opacity: 1; overflow: hidden;
+    transition: max-height .18s ease, opacity .18s ease, padding .18s ease;
+  }
+  .flip-row.row-hidden { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; pointer-events: none; }
   .flip-row label { font-size: 13px; color: var(--muted); }
 </style>
 </head>
@@ -374,9 +398,13 @@
         <button id="doorWidthPlus">＋</button>
       </div>
     </div>
-    <div class="flip-row" id="doorFlipRow" style="display:none;">
+    <div class="flip-row row-hidden" id="doorFlipRow">
       <label>開く向き・引き込む向きを反転</label>
       <button class="iconbtn" id="btnFlipDoor">⇄</button>
+    </div>
+    <div class="flip-row row-hidden" id="doorSwingRow">
+      <label>内開き/外開き</label>
+      <button class="iconbtn" id="btnToggleSwingOut">内開き</button>
     </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteDoor" style="display:none;">この建具を削除</button>
@@ -834,7 +862,10 @@ const ROOM_TYPES = [
   { key: "kitchen", label: "キッチン", em: "🍳", color: "#fff8e1", stroke: "#e0a95f" },
   { key: "washitsu", label: "和室", em: "🎎", color: "#f1f8e9", stroke: "#9ccf6a" },
   { key: "genkan", label: "玄関", em: "🚪", color: "#f5f0ff", stroke: "#b39ddb" },
-  { key: "rouka", label: "廊下", em: "🚶", color: "#f4f4f2", stroke: "#b7bcc2", noLabel: true },
+  // 塗り色・枠線とも、キャンバス背景(白)に対してうっすらとした差しか無く、
+  // 意図して描いた通路なのか単なる余白なのか判別しづらいという指摘があったため、
+  // 色相は無彩色のまま(廊下らしい控えめさは保ちつつ)濃さだけを強めた(再調査で発見)。
+  { key: "rouka", label: "廊下", em: "🚶", color: "#e9eaec", stroke: "#9aa1ab", noLabel: true },
   { key: "wc", label: "トイレ", em: "🚽", color: "#e0f7fa", stroke: "#4dd0e1" },
   { key: "yokushitsu", label: "浴室", em: "🛁", color: "#e1f5fe", stroke: "#4fc3f7" },
   { key: "senmen", label: "洗面所", em: "🚰", color: "#e8f5e9", stroke: "#81c784" },
@@ -860,6 +891,26 @@ const DOOR_TYPES = [
 function defaultWidthMasuForType(key) {
   const t = DOOR_TYPES.find((x) => x.key === key);
   return (t && t.defaultWidthMasu) || 0.85;
+}
+// 同一壁上の既存建具との最小ratio間隔を求める。固定のratio差(MIN_RATIO_GAP)だけに
+// 頼ると、壁が短い部屋(狭小の収納等)ではその分だけ絶対距離が短くなり、実質的に
+// 建具同士が近づきすぎてしまう(タップでの個別選択が困難になる)ため(再調査で指摘)、
+// 壁の長さによらない絶対距離の下限もあわせて要求する。開き戸(hinge/hinge_double)は
+// さらに円弧(振れ込み)が幅ぶん外側へ張り出すため、両者の幅から求めた余白を上乗せする
+// (通常サイズの窓・引き戸同士では過剰に広くならないよう、絶対下限は小さめに留める)。
+function minRatioGapFor(room, edgeIndex, otherDoor, newWidthMasu, newType) {
+  const p1 = room.points[edgeIndex];
+  const p2 = room.points[(edgeIndex + 1) % room.points.length];
+  const edgeLen = Math.hypot(p2.gx - p1.gx, p2.gy - p1.gy);
+  if (edgeLen < 0.01) return MIN_RATIO_GAP;
+  const involvesHinge = newType === "hinge" || newType === "hinge_double" || otherDoor.type === "hinge" || otherDoor.type === "hinge_double";
+  let marginWorld = 0.25; // 壁の長さによらない絶対下限(狭小部屋向け)
+  if (involvesHinge) {
+    const halfA = (newWidthMasu || defaultWidthMasuForType(newType)) / 2;
+    const halfB = (otherDoor.widthMasu || defaultWidthMasuForType(otherDoor.type)) / 2;
+    marginWorld = halfA + halfB + 0.15;
+  }
+  return Math.max(MIN_RATIO_GAP, marginWorld / edgeLen);
 }
 
 const $ = (id) => document.getElementById(id);
@@ -2259,7 +2310,7 @@ function handleSingleTouchStart(sx, sy) {
       // どちらにもなれるよう、まずは「ドラッグ開始候補」として保持しておく
       // (実際に動いたかどうかはpointermove/endPointer側で判定して分岐する)。
       snapshot();
-      doorDrag = { room: existing.room, doorIndex: existing.index, moved: false };
+      doorDrag = { room: existing.room, doorIndex: existing.index, moved: false, startSx: sx, startSy: sy, confirmed: false };
       render();
       return;
     }
@@ -2366,11 +2417,22 @@ drawCanvas.addEventListener("pointermove", (e) => {
   if (doorDrag && pointers.size === 1) {
     const rect = drawCanvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    // タップしたつもりで指がわずかにぶれただけ(実機検証で3px程度のぶれを確認)では
+    // 建具が動いたり内開き/外開きが変わったりしないよう、始点からの移動量が
+    // 一定を超えるまでは「ドラッグ確定」とみなさない。一度超えたら(confirmed)、
+    // 以降は途中で移動量が小さくなっても普通にドラッグを継続する。
+    const DOOR_DRAG_CONFIRM_PX = 8;
+    if (!doorDrag.confirmed) {
+      const moved = Math.hypot(sx - doorDrag.startSx, sy - doorDrag.startSy);
+      if (moved < DOOR_DRAG_CONFIRM_PX) return;
+      doorDrag.confirmed = true;
+    }
     const room = doorDrag.room;
     const hit = hitTestEdgeForDrag(room, sx, sy);
     if (hit) {
       // 同じ壁上の他の建具に近づきすぎる位置には移動させない(新規追加時と同じ制約)
-      const tooClose = room.doors.some((d, i) => i !== doorDrag.doorIndex && d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < MIN_RATIO_GAP);
+      const draggedDoor = room.doors[doorDrag.doorIndex];
+      const tooClose = room.doors.some((d, i) => i !== doorDrag.doorIndex && d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < minRatioGapFor(room, hit.edge, d, draggedDoor.widthMasu, draggedDoor.type));
       if (!tooClose) {
         const door = room.doors[doorDrag.doorIndex];
         door.edge = hit.edge;
@@ -2378,8 +2440,18 @@ drawCanvas.addEventListener("pointermove", (e) => {
         // 開き戸(hinge/hinge_double)は、生の指位置が壁のどちら側にあるかで
         // 内開き/外開きを決める。部屋の内側へドラッグすれば内開き、壁を
         // 越えて外側(隣室・屋外側)へドラッグすれば外開きに切り替わる。
+        // 壁の中心線ちょうどでの微妙なぶれで意図せず反転しないよう、
+        // 中心線の前後にヒステリシス帯(不感帯)を設け、現在の状態と逆側へ
+        // はっきり超えて動かした時だけ切り替える。
         if (door.type === "hinge" || door.type === "hinge_double") {
-          door.swingOut = pointerSideOfEdge(room, hit.edge, sx, sy) < 0;
+          const side = pointerSideOfEdge(room, hit.edge, sx, sy);
+          const SWING_HYSTERESIS_PX = 10;
+          const before = door.swingOut;
+          if (door.swingOut && side > SWING_HYSTERESIS_PX) door.swingOut = false;
+          else if (!door.swingOut && side < -SWING_HYSTERESIS_PX) door.swingOut = true;
+          if (door.swingOut !== before) {
+            showHint(door.swingOut ? "外開きに切り替わりました" : "内開きに切り替わりました");
+          }
         }
         doorDrag.moved = true;
         render();
@@ -2791,8 +2863,10 @@ function miniDoorPreviewSVG(key) {
   if (key === "hinge") return `<svg ${common}><path d="M6 30 L54 30" stroke="#c7ced6" stroke-width="2"/><path d="M6 30 L6 4" stroke="#1c2733" stroke-width="1.6" fill="none"/><path d="M6 30 A26 26 0 0 0 32 4" stroke="#1c2733" stroke-width="1.2" fill="none"/></svg>`;
   if (key === "hinge_double") return `<svg ${common}><path d="M6 30 L54 30" stroke="#c7ced6" stroke-width="2"/><path d="M6 30 L6 8" stroke="#1c2733" stroke-width="1.6" fill="none"/><path d="M6 30 A22 22 0 0 0 28 8" stroke="#1c2733" stroke-width="1.2" fill="none"/><path d="M54 30 L54 8" stroke="#1c2733" stroke-width="1.6" fill="none"/><path d="M54 30 A22 22 0 0 1 32 8" stroke="#1c2733" stroke-width="1.2" fill="none"/></svg>`;
   if (key === "slide") return `<svg ${common}><path d="M2 12 L54 12" stroke="#1c2733" stroke-width="1.4"/><path d="M2 22 L54 22" stroke="#1c2733" stroke-width="1.4"/><path d="M2 12 L-6 12 M2 22 L-6 22" stroke="#1c2733" stroke-width="1.4" stroke-dasharray="2,2" transform="translate(8,0)"/></svg>`;
-  // 引き違い戸: 2枚の障子が別々の溝を通ることを示す4本線(片引き戸の2本と区別)
-  if (key === "slide_double") return `<svg ${common}><path d="M6 7 L54 7" stroke="#1c2733" stroke-width="1.4"/><path d="M6 14 L54 14" stroke="#1c2733" stroke-width="1.4"/><path d="M6 20 L54 20" stroke="#1c2733" stroke-width="1.4"/><path d="M6 27 L54 27" stroke="#1c2733" stroke-width="1.4"/></svg>`;
+  // 引き違い戸: 片引き戸(1枚の板+戸袋の破線)とは、線の本数だけでなく形そのものを
+  // 変え、2枚の障子が互い違いに重なって見える2枚の矩形パネルで表現する
+  // (アイコンが小さいと本数の違いだけでは伝わりにくいと再調査で指摘されたため)。
+  if (key === "slide_double") return `<svg ${common}><rect x="3" y="5" width="38" height="11" rx="2" fill="none" stroke="#1c2733" stroke-width="1.4"/><rect x="19" y="18" width="38" height="11" rx="2" fill="none" stroke="#1c2733" stroke-width="1.4"/></svg>`;
   // 窓は色をドア系(#1c2733)と分け、盤面と同じ配色(#1565c0)にする
   if (key === "window_slide") return `<svg ${common}><path d="M6 10 L54 10" stroke="#1565c0" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1565c0" stroke-width="1.3"/><path d="M30 10 L30 24" stroke="#1565c0" stroke-width="1.3"/></svg>`;
   // FIX窓: 中央の仕切りが無い代わりに両端を閉じ、1枚の固定窓であることを示す
@@ -2816,7 +2890,15 @@ DOOR_TYPES.forEach((t) => {
 
 function updateFlipRowVisibility(typeKey) {
   const flippable = typeKey === "hinge" || typeKey === "slide";
-  $("doorFlipRow").style.display = flippable ? "flex" : "none";
+  $("doorFlipRow").classList.toggle("row-hidden", !flippable);
+}
+// 開き戸(hinge/hinge_double)は、内開き/外開きをドラッグだけでなくモーダルからも
+// 直接切り替えられるようにする(共有壁で意図した側に開かせたい場合や、ドラッグの
+// 未文書化な挙動に頼らず確実に切り替えたい場合のため)。
+function updateSwingRowVisibility(typeKey) {
+  const swingable = typeKey === "hinge" || typeKey === "hinge_double";
+  $("doorSwingRow").classList.toggle("row-hidden", !swingable);
+  if (swingable) $("btnToggleSwingOut").textContent = pendingDoor.swingOut ? "外開き" : "内開き";
 }
 function updateDoorTypeSelection(typeKey) {
   doorTypeGrid.querySelectorAll(".room-type-btn").forEach((btn) => {
@@ -2828,19 +2910,20 @@ function updateDoorTypeSelection(typeKey) {
 // openDoorEditModalで保存したoriginalとの差分として扱う)
 function updateDoorModalUI() {
   updateFlipRowVisibility(pendingDoor.type);
+  updateSwingRowVisibility(pendingDoor.type);
   updateDoorTypeSelection(pendingDoor.type);
   $("doorWidthRow").style.display = "flex";
   $("doorWidthValue").textContent = Math.round(pendingDoor.widthMasu * 91); // 1マス=910mm換算のcm表示
   if (pendingDoor.existingIndex >= 0) {
     const d = pendingDoor.room.doors[pendingDoor.existingIndex];
-    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip;
+    d.type = pendingDoor.type; d.widthMasu = pendingDoor.widthMasu; d.flip = pendingDoor.flip; d.swingOut = pendingDoor.swingOut;
     render();
   }
 }
 
 function openDoorAddModal(room, hit) {
   const doors = room.doors || [];
-  const tooClose = doors.some((d) => d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < MIN_RATIO_GAP);
+  const tooClose = doors.some((d) => d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < minRatioGapFor(room, hit.edge, d, lastDoorWidthMasu, lastDoorType));
   if (tooClose) {
     showHint("近くに建具があります。少し離してタップしてください");
     return;
@@ -2848,9 +2931,9 @@ function openDoorAddModal(room, hit) {
   // 直前に選んだ建具の種類・大きさを次回の初期値として引き継ぐ(同じ種類の建具を
   // 連続して付ける場面で、毎回種類を選び直さずそのまま「これで確定」だけで
   // 済むようにするため)。
-  // 新規に付ける建具は常に内開き(swingOut:false)から始まる。内開き/外開きの
-  // 切り替えはボタンではなく、既存の建具をドラッグで移動する操作の中で
-  // (壁のどちら側へ動かしたかに応じて)行う仕様のため。
+  // 新規に付ける建具は常に内開き(swingOut:false)から始まる。開き戸の場合は
+  // モーダル内の「内開き/外開き」ボタン、または後から建具をドラッグで壁の
+  // 反対側へ移動することでも切り替えられる。
   pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: false };
   $("doorModalTitle").textContent = "建具の種類";
   $("btnDeleteDoor").style.display = "none";
@@ -2885,6 +2968,10 @@ $("btnDeleteDoor").addEventListener("click", () => {
 });
 $("btnFlipDoor").addEventListener("click", () => {
   pendingDoor.flip = !pendingDoor.flip;
+  updateDoorModalUI();
+});
+$("btnToggleSwingOut").addEventListener("click", () => {
+  pendingDoor.swingOut = !pendingDoor.swingOut;
   updateDoorModalUI();
 });
 $("doorWidthMinus").addEventListener("click", () => stepDoorWidth(-0.1));
@@ -2975,7 +3062,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     currentTool = btn.dataset.tool;
     cancelDrawing();
     editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; doorDrag = null;
-    if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動できます");
+    if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
   });
