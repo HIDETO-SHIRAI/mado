@@ -297,6 +297,8 @@
     <button class="iconbtn" id="btnSnapMode" title="点を置く細かさ"><span>🔳</span><span class="cap">細かさ <span id="snapModeLabel">1/1</span></span></button>
     <button class="iconbtn emphasis" id="btnUndo" title="元に戻す"><span>↩︎</span><span class="cap">戻す</span></button>
     <button class="iconbtn emphasis" id="btnRedo" title="やり直す"><span>↪︎</span><span class="cap">進む</span></button>
+    <!-- 建具の描画不具合の調査用に一時的に追加したボタン。原因特定後に削除予定。 -->
+    <button class="iconbtn" id="btnDebugExport" title="調査用データコピー(一時的)"><span>🔧</span><span class="cap">調査用</span></button>
   </div>
 
   <div id="canvasWrap">
@@ -3127,6 +3129,27 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
 });
 $("btnUndo").addEventListener("click", undo);
 $("btnRedo").addEventListener("click", redo);
+
+// 建具の描画不具合(実機のみ再現)調査用の一時的な機能。今の階の部屋・建具データを
+// JSONとしてクリップボードにコピーする(個人情報等は含まれない、間取りの数値データのみ)。
+// クリップボードAPIが使えない端末向けに、失敗時は選択してコピーできるテキストエリアを表示する。
+$("btnDebugExport").addEventListener("click", async () => {
+  const data = JSON.stringify({ floorName: state.floorName, rooms: state.rooms }, null, 2);
+  try {
+    await navigator.clipboard.writeText(data);
+    showHint("調査用データをコピーしました。そのまま貼り付けて送ってください", true);
+  } catch (err) {
+    const existing = document.getElementById("debugExportArea");
+    if (existing) existing.remove();
+    const ta = document.createElement("textarea");
+    ta.id = "debugExportArea";
+    ta.value = data;
+    ta.style.cssText = "position:fixed;left:4%;top:8%;width:92%;height:74%;z-index:2147483647;font-size:11px;padding:8px;box-sizing:border-box;background:#fff;border:2px solid #2f6fed;border-radius:8px;";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    showHint("自動コピーできませんでした。表示されたテキストを長押しして全選択→コピーしてください", true);
+  }
+});
 
 /* ---------------- 画像で保存 ---------------- */
 // 保存用の画像を作る。グリッド線は入力補助用であり、マイソク等の完成図には
