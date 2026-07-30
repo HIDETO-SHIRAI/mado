@@ -886,6 +886,11 @@ const ROOM_TYPES = [
   { key: "wic", label: "WIC", em: "👚", color: "#f3ecf8", stroke: "#a985c9" },
   { key: "kaidan", label: "階段", em: "🪜", color: "#eef1f4", stroke: "#8b96a3" },
   { key: "ut", label: "UT", em: "🧺", color: "#e9f4f5", stroke: "#6bb0b8" },
+  // ベランダ・柱等のデッドスペースは、専有面積に含めない不動産実務の慣習に
+  // 合わせ、合計畳数・部屋数のどちらにも数えない(excludeFromTotal)。見た目は
+  // 押入等と同じ斜線ハッチングにし、「主要な居室ではない」ことを示す。
+  { key: "veranda", label: "ベランダ", em: "🌤️", color: "#eef2f5", stroke: "#9fb3c2", excludeFromTotal: true },
+  { key: "deadspace", label: "デッドスペース", em: "⬛", color: "#dcdee1", stroke: "#7a828a", excludeFromTotal: true },
   { key: "sonota", label: "その他", em: "▫️", color: "#f0f0f0", stroke: "#b0b0b0" },
 ];
 // 建具種別: 絵文字ではなく建築製図に準じた線記号(円弧・平行線)で描画する。
@@ -1222,7 +1227,7 @@ function render() {
 
 // 玄関・収納系は不動産図面の慣習に合わせ、斜めハッチング(斜線模様)で
 // 「土間・棚板のある空間」であることを表現する(WebCAD等の完成図を参考)。
-const HATCH_ROOM_KEYS = ["genkan", "oshiire", "shuno", "wic", "ut"];
+const HATCH_ROOM_KEYS = ["genkan", "oshiire", "shuno", "wic", "ut", "veranda", "deadspace"];
 function drawHatchFill(room) {
   const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
@@ -2083,10 +2088,17 @@ function drawHingeLeaf(hinge, dirx, diry, nx, ny, len, flip, sweepReversed) {
   dctx.restore();
 }
 
+// ベランダ・柱等のデッドスペース(excludeFromTotal)は、専有面積に含めない
+// 不動産実務の慣習に合わせ、合計畳数・部屋数のどちらからも除外する。
+function isExcludedFromTotal(room) {
+  const type = ROOM_TYPES.find((t) => t.key === room.typeKey);
+  return !!(type && type.excludeFromTotal);
+}
 function updateTotals() {
-  const total = state.rooms.reduce((s, r) => s + r.tatami, 0);
+  const countedRooms = state.rooms.filter((r) => !isExcludedFromTotal(r));
+  const total = countedRooms.reduce((s, r) => s + r.tatami, 0);
   $("totalTatami").textContent = Math.round(total * 2) / 2;
-  $("roomCount").textContent = state.rooms.length;
+  $("roomCount").textContent = countedRooms.length;
   $("projectTitle").textContent = `${state.projectName} - ${state.floorName}`;
 }
 function updateFinishButtonState() {
