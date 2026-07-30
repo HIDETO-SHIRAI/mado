@@ -1908,6 +1908,22 @@ function doorScreenPos(room, door) {
 // 幅(doorWidth)は壁の長さに対する比率ではなく、door.widthMasu(実寸換算の
 // 絶対値・グリッド単位)をそのままpx変換した値を使う(壁が短い場合のみ、
 // 壁からはみ出さないようedgeLenの90%を上限にクランプする)。
+// 部屋の頂点の並び順(時計回り/反時計回り)を符号で返す(シューレース公式)。
+// 部屋はユーザーが指でなぞって描くため、どちら向きの順序で頂点が記録されるかは
+// 部屋ごとに変わりうる。既定の法線式(nx=-uy,ny=ux)は特定の巻き方向を前提にして
+// おり、逆向きに描かれた部屋では「内開き」の法線が実際には部屋の外側を向いて
+// しまい、内開き/外開きの表示が意図と逆転する不具合があった(実機報告で発見)。
+// 巻き方向をここで判定し、逆向きの部屋では法線を反転させることで、部屋がどちら
+// 向きに描かれても「内開き」は常にその部屋の内側を向くようにする。
+function roomWindingSign(room) {
+  const pts = room.points;
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
+    sum += p1.gx * p2.gy - p2.gx * p1.gy;
+  }
+  return sum >= 0 ? 1 : -1;
+}
 function drawDoorMark(room, door) {
   const p1 = room.points[door.edge];
   const p2 = room.points[(door.edge + 1) % room.points.length];
@@ -1915,7 +1931,8 @@ function drawDoorMark(room, door) {
   const edgeLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
   if (edgeLen < 1) return;
   const ux = (s2.x - s1.x) / edgeLen, uy = (s2.y - s1.y) / edgeLen; // 壁沿いの単位ベクトル
-  let nx = -uy, ny = ux; // 法線ベクトル(既定では壁から室内側へ90度)
+  const windingSign = roomWindingSign(room);
+  let nx = -uy * windingSign, ny = ux * windingSign; // 法線ベクトル(常に壁から室内側へ90度)
   const type = door.type;
   // 開き戸(hinge/hinge_double)は、内開き(既定)なら室内側へ、外開きなら
   // 法線を反転させて壁の外側(隣室・屋外など)へスイングするようにする。
@@ -2172,7 +2189,8 @@ function pointerSideOfEdge(room, edgeIndex, sx, sy) {
   const len = Math.hypot(dx, dy);
   if (len === 0) return 1;
   const ux = dx / len, uy = dy / len;
-  const nx = -uy, ny = ux; // 室内側への法線(drawDoorMarkの既定と同じ向き)
+  const windingSign = roomWindingSign(room);
+  const nx = -uy * windingSign, ny = ux * windingSign; // 室内側への法線(drawDoorMarkの既定と同じ向き)
   return (sx - s1.x) * nx + (sy - s1.y) * ny;
 }
 
