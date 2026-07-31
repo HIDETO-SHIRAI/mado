@@ -1911,21 +1911,33 @@ function drawOtherFloorsGhost() {
   Object.keys(proj.floors).forEach((f) => {
     if (f === state.floorName) return;
     const fd = normalizeFloorData(proj.floors[f]);
-    dctx.save();
-    dctx.globalAlpha = 0.28;
     fd.rooms.forEach((room) => {
+      // 階段は他の階と自動連動しない独立した部屋になったが、実務では上下階の
+      // 階段はだいたい近い位置にある(位置を揃えたい場面がある)ため、他の部屋の
+      // 参照表示(薄い灰色の点線)より目立たせ、他の階の階段の位置が一目で
+      // 分かるようにする(位置合わせの目印として使えるように)。
+      const isStair = room.typeKey === "kaidan";
+      dctx.save();
+      dctx.globalAlpha = isStair ? 0.55 : 0.28;
       dctx.beginPath();
       room.points.forEach((p, i) => {
         const { x, y } = gridToScreen(p.gx, p.gy);
         if (i === 0) dctx.moveTo(x, y); else dctx.lineTo(x, y);
       });
       dctx.closePath();
-      dctx.strokeStyle = "#7c8996"; dctx.lineWidth = 2;
-      dctx.setLineDash([4, 3]);
+      dctx.strokeStyle = isStair ? "#e07a2c" : "#7c8996";
+      dctx.lineWidth = isStair ? 3 : 2;
+      dctx.setLineDash(isStair ? [2, 2] : [4, 3]);
       dctx.stroke();
       dctx.setLineDash([]);
+      if (isStair) {
+        const c = polygonCentroidScreen(room.points);
+        dctx.font = "18px -apple-system, sans-serif";
+        dctx.textAlign = "center"; dctx.textBaseline = "middle";
+        dctx.fillText("🪜", c.x, c.y);
+      }
+      dctx.restore();
     });
-    dctx.restore();
   });
 }
 
@@ -2710,7 +2722,6 @@ function finalizeActiveDrags() {
     room.tatami = masuToTatami(polygonAreaMasu(room.points));
     vertexDrag = null;
     render(); autoSave();
-    syncStairToOtherFloors(room);
     return true;
   }
   if (fixtureDrag) {
@@ -2858,23 +2869,20 @@ function confirmTatami() {
   const v = Math.max(0, parseFloat($("tatamiModal").dataset.current) || 0);
   const isStair = $("stepCountRow").style.display !== "none";
   const stepCount = isStair ? (parseInt($("tatamiModal").dataset.stepCount, 10) || DEFAULT_STEP_COUNT) : undefined;
-  let room;
   if (editingRoom) {
     snapshot();
     editingRoom.tatami = v;
     if (isStair) editingRoom.stepCount = stepCount;
-    room = editingRoom;
     editingRoom = null;
   } else {
     snapshot();
-    room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
+    const room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
     if (isStair) room.stepCount = stepCount;
     state.rooms.push(room);
     pendingRoom = null;
   }
   hideModal("tatamiModal");
   render(); autoSave();
-  syncStairToOtherFloors(room);
 }
 $("btnConfirmTatami").addEventListener("click", confirmTatami);
 $("btnDeleteRoomInModal").addEventListener("click", () => {
@@ -2885,7 +2893,6 @@ $("btnDeleteRoomInModal").addEventListener("click", () => {
     state.rooms = state.rooms.filter((r) => r !== room);
     editingRoom = null;
     render(); autoSave();
-    if (room.typeKey === "kaidan") removeStairFromOtherFloors(room.stairId);
   });
 });
 
@@ -3742,42 +3749,8 @@ function autoSave() {
   saveLastOpen();
 }
 
-// 階段は1階だけで完結する部屋ではなく、上下階を実際に繋ぐものなので、ある階で
-// 階段を描いたら他の階にも同じ形をそのまま複製する(逆に位置がずれたまま放置
-// されて「実は繋がっていない階段」になる問題を防ぐ)。room.stairIdで階をまたいで
-// 同一の階段だと紐付け、無ければ新規発行する。
-// 他の階に複製する際の階段部屋オブジェクトを作る共通処理(建具は複製しない=
-// 階ごとに個別に付け直す想定)。既存の複製を上書きする場合はexistingIdを渡す。
-function makeStairCopy(sourceRoom, existingId) {
-  return {
-    id: existingId != null ? existingId : Date.now() + Math.random(),
-    points: sourceRoom.points.map((p) => ({ ...p })),
-    typeKey: "kaidan",
-    tatami: sourceRoom.tatami,
-    stepCount: sourceRoom.stepCount || DEFAULT_STEP_COUNT,
-    stairId: sourceRoom.stairId,
-    doors: [],
-  };
-}
-function syncStairToOtherFloors(room) {
-  if (room.typeKey !== "kaidan") return;
-  if (!room.stairId) room.stairId = `stair_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const all = loadAllProjects();
-  const proj = all[state.projectName];
-  if (!proj || !proj.floors) return;
-  Object.keys(proj.floors).forEach((floorName) => {
-    if (floorName === state.floorName) return;
-    const fd = normalizeFloorData(proj.floors[floorName]);
-    const idx = fd.rooms.findIndex((r) => r.stairId === room.stairId);
-    const copy = makeStairCopy(room, idx >= 0 ? fd.rooms[idx].id : null);
-    if (idx >= 0) fd.rooms[idx] = copy; else fd.rooms.push(copy);
-    proj.floors[floorName] = fd;
-  });
-  saveAllProjects(all);
-}
-
 // 方位(北の向き)は建物全体で共通のはずなので、ある階でコンパスを回したら
-// 他の全ての階にも同じ角度を反映する(階段の自動連動と同じ考え方)。
+// 他の全ての階にも同じ角度を反映する。
 // 新規階作成時に現在の角度を引き継ぐだけでは、後から別の階で方位を直した時に
 // 他の階だけ古い角度のまま取り残されてしまうため、変更のたびに同期する。
 function syncNorthAngleToOtherFloors() {
@@ -3795,21 +3768,6 @@ function syncNorthAngleToOtherFloors() {
     }
   });
   if (changed) saveAllProjects(all);
-}
-
-// 階段を削除したら、他の階に複製されている分も一緒に削除する
-function removeStairFromOtherFloors(stairId) {
-  if (!stairId) return;
-  const all = loadAllProjects();
-  const proj = all[state.projectName];
-  if (!proj || !proj.floors) return;
-  Object.keys(proj.floors).forEach((floorName) => {
-    if (floorName === state.floorName) return;
-    const fd = normalizeFloorData(proj.floors[floorName]);
-    fd.rooms = fd.rooms.filter((r) => r.stairId !== stairId);
-    proj.floors[floorName] = fd;
-  });
-  saveAllProjects(all);
 }
 
 $("btnSave").addEventListener("click", () => {
@@ -4025,20 +3983,11 @@ $("btnNewFloor").addEventListener("click", () => {
     saveCurrentFloorInto(all);
     saveAllProjects(all);
     state.floorName = name;
-    // 新しい階には、他の既存階に既に描かれている階段があればそのまま複製しておく
-    // (階段は上下階を繋ぐものなので、後から追加した階にも自動で現れてほしい)。
-    const proj = all[state.projectName];
-    const stairsById = new Map();
-    if (proj && proj.floors) {
-      Object.values(proj.floors).forEach((raw) => {
-        normalizeFloorData(raw).rooms.forEach((r) => {
-          if (r.typeKey === "kaidan" && r.stairId && !stairsById.has(r.stairId)) stairsById.set(r.stairId, r);
-        });
-      });
-    }
-    const rooms = Array.from(stairsById.values()).map((r) => makeStairCopy(r, null));
+    // 階段は他の階と自動連動しない独立した部屋のため、新しい階は空の状態で
+    // 始める(階段を含め、他の階の部屋は複製しない)。位置を揃えたい場合は
+    // 「他の階を薄く表示」(showAllFloors)の参照表示を目安に使う。
     // 北の向き(northAngle)は建物共通なので引き継ぐ
-    openFloorIntoState({ rooms, northAngle: state.northAngle }, "floorModal");
+    openFloorIntoState({ rooms: [], northAngle: state.northAngle }, "floorModal");
   }, (name) => {
     const all = loadAllProjects();
     const proj = all[state.projectName];
