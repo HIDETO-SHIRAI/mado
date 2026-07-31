@@ -396,6 +396,10 @@
         <button id="stepCountPlus">＋</button>
       </div>
     </div>
+    <div class="field-row" id="stairDirRow" style="display:none;">
+      <label>上り下りの向き</label>
+      <button class="iconbtn" id="btnFlipStairDir">⇄ 標準</button>
+    </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteRoomInModal" style="display:none;">この部屋を削除</button>
       <button class="btn" id="btnChangeRoomType" style="display:none;">種類を変更</button>
@@ -1481,6 +1485,9 @@ function drawStairSymbol(room) {
   const w = maxX - minX, h = maxY - minY;
 
   const stepCount = room.stepCount || DEFAULT_STEP_COUNT;
+  // 矢印の軸(縦/横)は部屋の形から自動判定できるが、どちら向きに上るかは形だけ
+  // では分からないため、モーダルの「⇄」ボタンで明示的に反転できるようにする。
+  const flip = !!room.stairFlip;
 
   if (pts.length > 4) {
     // 反射頂点(外接矩形の内側に食い込んでいる頂点)がちょうど1つだけの
@@ -1495,9 +1502,9 @@ function drawStairSymbol(room) {
       p.x > minX + eps && p.x < maxX - eps && p.y > minY + eps && p.y < maxY - eps
     ).length;
     if (reflexCount === 1) {
-      drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount);
+      drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, flip);
     } else {
-      drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount);
+      drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount, flip);
     }
     return;
   }
@@ -1512,10 +1519,13 @@ function drawStairSymbol(room) {
       dctx.beginPath(); dctx.moveTo(minX + w * 0.15, y); dctx.lineTo(maxX - w * 0.15, y); dctx.stroke();
     }
     const ax = minX + w / 2;
-    dctx.beginPath(); dctx.moveTo(ax, maxY - h * 0.1); dctx.lineTo(ax, minY + h * 0.1); dctx.stroke();
+    const tailY = flip ? minY + h * 0.1 : maxY - h * 0.1;
+    const headY = flip ? maxY - h * 0.1 : minY + h * 0.1;
+    const tickSign = Math.sign(tailY - headY) || 1;
+    dctx.beginPath(); dctx.moveTo(ax, tailY); dctx.lineTo(ax, headY); dctx.stroke();
     dctx.beginPath();
-    dctx.moveTo(ax, minY + h * 0.1); dctx.lineTo(ax - w * 0.06, minY + h * 0.18);
-    dctx.moveTo(ax, minY + h * 0.1); dctx.lineTo(ax + w * 0.06, minY + h * 0.18);
+    dctx.moveTo(ax, headY); dctx.lineTo(ax - w * 0.06, headY + h * 0.08 * tickSign);
+    dctx.moveTo(ax, headY); dctx.lineTo(ax + w * 0.06, headY + h * 0.08 * tickSign);
     dctx.stroke();
   } else {
     for (let i = 1; i < treadCount; i++) {
@@ -1523,10 +1533,13 @@ function drawStairSymbol(room) {
       dctx.beginPath(); dctx.moveTo(x, minY + h * 0.15); dctx.lineTo(x, maxY - h * 0.15); dctx.stroke();
     }
     const ay = minY + h / 2;
-    dctx.beginPath(); dctx.moveTo(maxX - w * 0.1, ay); dctx.lineTo(minX + w * 0.1, ay); dctx.stroke();
+    const tailX = flip ? minX + w * 0.1 : maxX - w * 0.1;
+    const headX = flip ? maxX - w * 0.1 : minX + w * 0.1;
+    const tickSign = Math.sign(tailX - headX) || 1;
+    dctx.beginPath(); dctx.moveTo(tailX, ay); dctx.lineTo(headX, ay); dctx.stroke();
     dctx.beginPath();
-    dctx.moveTo(minX + w * 0.1, ay); dctx.lineTo(minX + w * 0.18, ay - h * 0.06);
-    dctx.moveTo(minX + w * 0.1, ay); dctx.lineTo(minX + w * 0.18, ay + h * 0.06);
+    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay - h * 0.06);
+    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay + h * 0.06);
     dctx.stroke();
   }
   dctx.restore();
@@ -1537,7 +1550,7 @@ function drawStairSymbol(room) {
 // 部屋の一部が空白のまま描かれない(=drawBentStairSymbolの帯モデルが前提と
 // する「反射頂点1つのL字」から外れた形で発生していた不具合)。矢印は長辺方向の
 // 直線1本の簡易近似(実際の折れ方までは表現しないが、視覚的な破綻は避けられる)。
-function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount) {
+function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount, flip) {
   const w = maxX - minX, h = maxY - minY;
   const vertical = h >= w;
   const treadCount = stepCount;
@@ -1564,17 +1577,23 @@ function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount) {
   dctx.strokeStyle = "#2f6fed"; dctx.lineWidth = 2.4;
   if (vertical) {
     const ax = minX + w / 2;
-    dctx.beginPath(); dctx.moveTo(ax, maxY - h * 0.1); dctx.lineTo(ax, minY + h * 0.1); dctx.stroke();
+    const tailY = flip ? minY + h * 0.1 : maxY - h * 0.1;
+    const headY = flip ? maxY - h * 0.1 : minY + h * 0.1;
+    const tickSign = Math.sign(tailY - headY) || 1;
+    dctx.beginPath(); dctx.moveTo(ax, tailY); dctx.lineTo(ax, headY); dctx.stroke();
     dctx.beginPath();
-    dctx.moveTo(ax, minY + h * 0.1); dctx.lineTo(ax - w * 0.06, minY + h * 0.18);
-    dctx.moveTo(ax, minY + h * 0.1); dctx.lineTo(ax + w * 0.06, minY + h * 0.18);
+    dctx.moveTo(ax, headY); dctx.lineTo(ax - w * 0.06, headY + h * 0.08 * tickSign);
+    dctx.moveTo(ax, headY); dctx.lineTo(ax + w * 0.06, headY + h * 0.08 * tickSign);
     dctx.stroke();
   } else {
     const ay = minY + h / 2;
-    dctx.beginPath(); dctx.moveTo(maxX - w * 0.1, ay); dctx.lineTo(minX + w * 0.1, ay); dctx.stroke();
+    const tailX = flip ? minX + w * 0.1 : maxX - w * 0.1;
+    const headX = flip ? maxX - w * 0.1 : minX + w * 0.1;
+    const tickSign = Math.sign(tailX - headX) || 1;
+    dctx.beginPath(); dctx.moveTo(tailX, ay); dctx.lineTo(headX, ay); dctx.stroke();
     dctx.beginPath();
-    dctx.moveTo(minX + w * 0.1, ay); dctx.lineTo(minX + w * 0.18, ay - h * 0.06);
-    dctx.moveTo(minX + w * 0.1, ay); dctx.lineTo(minX + w * 0.18, ay + h * 0.06);
+    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay - h * 0.06);
+    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay + h * 0.06);
     dctx.stroke();
   }
   dctx.restore();
@@ -1584,7 +1603,7 @@ function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount) {
 // 探し、そこを折り返し地点として矢印を2区間に分けて曲げて描く。踏み板は外接矩形
 // 全体に格子状の線を敷いた上で部屋のポリゴン形状にクリップし、L字なりの形だけ
 // 表示されるようにする(簡易的な近似だが、どちら向きに折れているかは伝わる)。
-function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount) {
+function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, flip) {
   const eps = 0.5;
   const reflex = pts.find((p) =>
     p.x > minX + eps && p.x < maxX - eps && p.y > minY + eps && p.y < maxY - eps
@@ -1749,16 +1768,19 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount) {
   const band2CenterX = (band2X[0] + band2X[1]) / 2;
   const farXFromReflex = Math.abs(reflex.x - minX) > Math.abs(maxX - reflex.x) ? minX : maxX;
   const farYFromReflex = Math.abs(reflex.y - minY) > Math.abs(maxY - reflex.y) ? minY : maxY;
-  const start = band1IsWide ? { x: farXFromReflex, y: band1CenterY } : { x: band2CenterX, y: far1Y };
+  const legA = band1IsWide ? { x: farXFromReflex, y: band1CenterY } : { x: band2CenterX, y: far1Y };
   const bend = { x: band2CenterX, y: band1CenterY };
-  const end = band2IsTall ? { x: band2CenterX, y: farYFromReflex } : { x: far2X, y: band1CenterY };
+  const legB = band2IsTall ? { x: band2CenterX, y: farYFromReflex } : { x: far2X, y: band1CenterY };
+  // どちらの脚を上り始点/終点にするかは形だけでは決まらないため、モーダルの
+  // 「⇄」ボタンでの反転指定に応じて矢印の先端(=上りの終点)側を入れ替える。
+  const end = flip ? legA : legB;
 
   dctx.save();
   dctx.strokeStyle = "#2f6fed"; dctx.lineWidth = 2.4;
   dctx.beginPath();
-  dctx.moveTo(start.x, start.y);
+  dctx.moveTo(legA.x, legA.y);
   dctx.lineTo(bend.x, bend.y);
-  dctx.lineTo(end.x, end.y);
+  dctx.lineTo(legB.x, legB.y);
   dctx.stroke();
   // 矢印の先端(end側=上りの終点)
   const dx = end.x - bend.x, dy = end.y - bend.y;
@@ -2848,10 +2870,14 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
 
   const isStair = type.key === "kaidan";
   $("stepCountRow").style.display = isStair ? "flex" : "none";
+  $("stairDirRow").style.display = isStair ? "flex" : "none";
   if (isStair) {
     const existing = (isEdit && editingRoom && editingRoom.stepCount) || (pendingRoom && pendingRoom.stepCount) || DEFAULT_STEP_COUNT;
     $("tatamiModal").dataset.stepCount = existing;
     $("stepCountValue").textContent = existing;
+    const existingFlip = !!((isEdit && editingRoom && editingRoom.stairFlip) || (pendingRoom && pendingRoom.stairFlip));
+    $("tatamiModal").dataset.stairFlip = existingFlip ? "1" : "0";
+    $("btnFlipStairDir").textContent = existingFlip ? "⇄ 反転中" : "⇄ 標準";
   }
 }
 $("btnChangeRoomType").addEventListener("click", () => {
@@ -2865,19 +2891,28 @@ function stepStepCount(delta) {
   $("tatamiModal").dataset.stepCount = v;
   $("stepCountValue").textContent = v;
 }
+// 階段の矢印は部屋の形(縦長/横長)から自動判定した軸に沿って描くが、実際にどちら
+// 向きに上るかまでは形だけでは分からないため、建具の内開き/外開きと同様に
+// 明示的なボタンで反転できるようにする。
+$("btnFlipStairDir").addEventListener("click", () => {
+  const flipped = $("tatamiModal").dataset.stairFlip === "1";
+  $("tatamiModal").dataset.stairFlip = flipped ? "0" : "1";
+  $("btnFlipStairDir").textContent = flipped ? "⇄ 標準" : "⇄ 反転中";
+});
 function confirmTatami() {
   const v = Math.max(0, parseFloat($("tatamiModal").dataset.current) || 0);
   const isStair = $("stepCountRow").style.display !== "none";
   const stepCount = isStair ? (parseInt($("tatamiModal").dataset.stepCount, 10) || DEFAULT_STEP_COUNT) : undefined;
+  const stairFlip = isStair ? ($("tatamiModal").dataset.stairFlip === "1") : undefined;
   if (editingRoom) {
     snapshot();
     editingRoom.tatami = v;
-    if (isStair) editingRoom.stepCount = stepCount;
+    if (isStair) { editingRoom.stepCount = stepCount; editingRoom.stairFlip = stairFlip; }
     editingRoom = null;
   } else {
     snapshot();
     const room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
-    if (isStair) room.stepCount = stepCount;
+    if (isStair) { room.stepCount = stepCount; room.stairFlip = stairFlip; }
     state.rooms.push(room);
     pendingRoom = null;
   }
