@@ -143,7 +143,11 @@
   .modal {
     background: var(--panel); width: 100%; max-width: 480px;
     border-radius: 18px 18px 0 0; padding: 14px 16px 20px;
-    max-height: 58vh; display: flex; flex-direction: column; overflow: hidden;
+    /* 建具モーダルに大きさ・位置・反転・内開き外開きの行が増えた結果、
+       58vhでは小さい画面(iPhone SE等)で建具種類グリッドの残り高さが
+       行の境目と合わず、ボタンが中途半端な高さで見切れることがあった。
+       上限を少し引き上げて、グリッドに残る余白を確保する。 */
+    max-height: 70vh; display: flex; flex-direction: column; overflow: hidden;
   }
   .modal h2 { font-size: 15px; margin: 0 0 10px; flex: 0 0 auto; }
   /* 全画面表示の「別ページ」バリエーション。物件一覧は物件数が増えるほど
@@ -178,7 +182,7 @@
 
   .field-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 2px; border-bottom: 1px solid #f0f2f5; flex: 0 0 auto;
+    padding: 6px 2px; border-bottom: 1px solid #f0f2f5; flex: 0 0 auto;
   }
   .field-row:last-child { border-bottom: none; }
   .field-row label { font-size: 14px; color: var(--muted); }
@@ -188,6 +192,9 @@
     background: #eef1f5; font-size: 18px; color: var(--text);
   }
   .stepper .val { min-width: 64px; text-align: center; font-size: 16px; font-weight: 700; }
+  /* 「大きさ」の±(グレー)と「壁に沿って動かす」の◀▶(青)を色・記号の両方で
+     区別し、寸法変更と位置移動を取り違えないようにする(実機フィードバックで指摘)。 */
+  .stepper-pos button { background: #e3ecfd; color: var(--accent); }
   .val small { font-weight: 400; color: var(--muted); font-size: 11px; }
   #tatamiValue {
     width: 64px; text-align: center; font-size: 16px; font-weight: 700; font-family: inherit;
@@ -236,6 +243,16 @@
     padding: 6px 12px; border-radius: 999px; max-width: 70%;
     pointer-events: none; transition: opacity .3s;
   }
+
+  /* 「画像で保存」を押した直後、保存バナーが本当に出たのか気づきにくい
+     (押しても何も起きていないように見える)との指摘を受け、バナー表示時に
+     一瞬はっきり動かして目に留まるようにする。 */
+  @keyframes bannerPopIn {
+    0% { transform: translateY(-24px); opacity: 0; }
+    60% { transform: translateY(4px); opacity: 1; }
+    100% { transform: translateY(0); opacity: 1; }
+  }
+  #downloadReadyBanner.banner-pop-in { animation: bannerPopIn .35s ease-out; }
 
   /* 建具種類グリッドは6種類が2段になり、小さい画面(iPhone SE等)では2段目が
      グリッド内部スクロールの下に隠れてしまう。スクロールバーの無い実機では
@@ -405,9 +422,9 @@
          操作だけで壁沿いの位置を動かせるようにする -->
     <div class="field-row" id="doorPositionRow">
       <label>壁に沿って動かす</label>
-      <div class="stepper">
-        <button id="doorPosMinus">−</button>
-        <button id="doorPosPlus">＋</button>
+      <div class="stepper stepper-pos">
+        <button id="doorPosMinus">◀</button>
+        <button id="doorPosPlus">▶</button>
       </div>
     </div>
     <div class="flip-row row-hidden" id="doorFlipRow">
@@ -1974,7 +1991,10 @@ function drawDoorMark(room, door) {
   const zs = Math.max(0.7, view.scale);
   dctx.save();
   dctx.strokeStyle = isWindow ? "#1565c0" : "#1c2733";
-  dctx.lineWidth = 1.8 * zs;
+  // 保存画像をスマホのプレビュー幅(数百px)まで縮小表示されると、片引き戸・
+  // 引き違い戸・窓の細い線が壁線に埋もれて判別できなくなるとの指摘を受け、
+  // 線幅とオフセット間隔を全体的に太く・広くした(実務シナリオ評価で発見)。
+  dctx.lineWidth = 2.4 * zs;
 
   // 円弧の掃引方向(sweepReversed)は、nx,nyの符号反転回数の偶奇と一致している
   // 必要がある。nx,nyはswingOutだけでなくwindingSign(部屋の巻き方向補正)でも
@@ -1996,7 +2016,7 @@ function drawDoorMark(room, door) {
     else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false, !effectiveSwingOut);
   } else if (type === "slide") {
     // 片引き戸: 壁厚の中に平行2本線+戸袋側(a方向)への破線延長で引き込みを表現
-    const off = 3.2 * zs;
+    const off = 4.5 * zs;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
     dctx.lineTo(b.x + nx * off, b.y + ny * off);
@@ -2014,7 +2034,7 @@ function drawDoorMark(room, door) {
   } else if (type === "slide_double") {
     // 引き違い戸: 2枚の障子が別々の溝を通ることを示すため、間隔を大きく
     // 広げた2組(計4本)の平行線にし、片引き戸(2本)とはっきり区別する
-    [2.2, 6.2].forEach((off0) => {
+    [3, 8.5].forEach((off0) => {
       const off = off0 * zs;
       dctx.beginPath();
       dctx.moveTo(a.x + nx * off, a.y + ny * off);
@@ -2027,7 +2047,7 @@ function drawDoorMark(room, door) {
     // window_slide / window_fix: 太い外壁線に埋もれて見えなくならないよう、まず
     // 壁を横切る白い帯で「開口部」をはっきり切り抜いてから、太めのサッシ線を描く
     // (マイソク品質評価で「窓が見当たらない」と複数回指摘されたための強調修正)。
-    const cutOff = 8 * zs;
+    const cutOff = 9 * zs;
     dctx.save();
     dctx.strokeStyle = "#ffffff";
     dctx.lineWidth = cutOff * 2;
@@ -2037,8 +2057,8 @@ function drawDoorMark(room, door) {
     dctx.stroke();
     dctx.restore();
 
-    const off = 4.5 * zs;
-    dctx.lineWidth = 2.6 * zs;
+    const off = 6 * zs;
+    dctx.lineWidth = 3.4 * zs;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
     dctx.lineTo(b.x + nx * off, b.y + ny * off);
@@ -2163,14 +2183,46 @@ function hitTestRoom(wx, wy) {
   return null;
 }
 
+// 点(px,py)から線分(x1,y1)-(x2,y2)までの最短距離。
+function distPointToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((px - x1) * dx + (py - y1) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + dx * t, cy = y1 + dy * t;
+  return Math.hypot(px - cx, py - cy);
+}
 function hitTestExistingDoor(screenX, screenY) {
   for (let i = state.rooms.length - 1; i >= 0; i--) {
     const room = state.rooms[i];
     const doors = room.doors || [];
     for (let d = 0; d < doors.length; d++) {
-      const p = doorScreenPos(room, doors[d]);
+      const door = doors[d];
+      const p = doorScreenPos(room, door);
       if (Math.hypot(screenX - p.x, screenY - p.y) <= DOOR_HIT_RADIUS_PX + 6) {
         return { room, index: d };
+      }
+      // 開き戸(hinge/hinge_double)は、外開きだと見た目の弧が壁の外側へ
+      // 張り出す。壁の上の点だけで判定すると、実際に見えている絵(弧)を
+      // タップしても反応しないという不具合があったため(実機報告で発見)、
+      // 振れ込み方向も含めた線分でタップ判定する。
+      if (door.type === "hinge" || door.type === "hinge_double") {
+        const p1 = room.points[door.edge];
+        const p2 = room.points[(door.edge + 1) % room.points.length];
+        const s1 = gridToScreen(p1.gx, p1.gy), s2 = gridToScreen(p2.gx, p2.gy);
+        const edgeLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
+        if (edgeLen >= 1) {
+          const ux = (s2.x - s1.x) / edgeLen, uy = (s2.y - s1.y) / edgeLen;
+          const windingSign = roomWindingSign(room);
+          let nx = -uy * windingSign, ny = ux * windingSign;
+          if (door.swingOut) { nx = -nx; ny = -ny; }
+          const widthMasu = Math.min(door.widthMasu || 0.85, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
+          const doorWidth = Math.max(16, widthMasu * BASE_CELL * view.scale);
+          const farX = p.x + nx * doorWidth, farY = p.y + ny * doorWidth;
+          if (distPointToSegment(screenX, screenY, p.x, p.y, farX, farY) <= DOOR_HIT_RADIUS_PX + 6) {
+            return { room, index: d };
+          }
+        }
       }
     }
   }
@@ -2403,6 +2455,17 @@ function handleSingleTouchStart(sx, sy) {
   // 描く/編集ツール: 何も描いていない状態でのタップは、まず「既存部屋の選択」を試す。
   // 部屋の中をタップしたら選択、何もない場所なら新規描画に進む。
   const isFreshTap = drawingPoints.length === 0;
+  // 間取りを見返している最中(既定の描く/編集タブ)に既存の建具を軽くタップすると、
+  // 建具の編集ではなく新規の壁描画が誤って始まってしまう不具合があった(実機で
+  // 発見、データ破損のおそれもある)。建具タブへの切替を強制せず、ここでも
+  // 既存の建具をタップした場合はその場で編集モーダルを開くようにする。
+  if (isFreshTap) {
+    const existingDoor = hitTestExistingDoor(sx, sy);
+    if (existingDoor) {
+      openDoorEditModal(existingDoor.room, existingDoor.index);
+      return;
+    }
+  }
   if (isFreshTap && tryRoomSelectionTap(sx, sy)) return;
   // なぞり描き開始(または続きの描画開始)
   if (isFreshTap) drawStartWasDeselectTap = lastTapWasDeselect;
@@ -2971,6 +3034,9 @@ DOOR_TYPES.forEach((t) => {
 function updateFlipRowVisibility(typeKey) {
   const flippable = typeKey === "hinge" || typeKey === "slide";
   $("doorFlipRow").classList.toggle("row-hidden", !flippable);
+  // タップしても見た目が変わらず「効いているか不安」との指摘を受け、
+  // 内開き/外開きボタンと同様に現在の状態がテキストで分かるようにする。
+  if (flippable) $("btnFlipDoor").textContent = pendingDoor.flip ? "⇄ 反転中" : "⇄ 標準";
 }
 // 内開き/外開きボタンに、テキストだけでなく実際の盤面と同じ見た目(壁線+弧)の
 // 小アイコンを添える。「内開き」「外開き」という言葉だけでは伝わりにくいという
@@ -3021,7 +3087,11 @@ function openDoorAddModal(room, hit) {
   const doors = room.doors || [];
   const tooClose = doors.some((d) => d.edge === hit.edge && Math.abs(d.ratio - hit.ratio) < minRatioGapFor(room, hit.edge, d, lastDoorWidthMasu, lastDoorType));
   if (tooClose) {
-    showHint("近くに建具があります。少し離してタップしてください");
+    // 建具の種類によって必要な間隔が変わる(両開き戸・引き違い戸は特に幅が
+    // 広い)ため、単に「近い」だけでなく理由も伝え、次にどうすればよいか
+    // 分かるようにする(事前に除外ゾーンを表示する案もあるが、まずは軽い
+    // 対応としてヒント文言を具体化する)。
+    showHint("近くに建具があります。特に両開き戸・引き違い戸は幅が広いため、もう少し離してタップしてください", true);
     return;
   }
   // 直前に選んだ建具の種類・大きさを次回の初期値として引き継ぐ(同じ種類の建具を
@@ -3031,7 +3101,9 @@ function openDoorAddModal(room, hit) {
   // モーダル内の「内開き/外開き」ボタン、または後から建具をドラッグで壁の
   // 反対側へ移動することでも切り替えられる。
   pendingDoor = { room, edge: hit.edge, ratio: hit.ratio, existingIndex: -1, type: lastDoorType, widthMasu: lastDoorWidthMasu, flip: lastDoorFlip, swingOut: false };
-  $("doorModalTitle").textContent = "建具の種類";
+  // 見出しは「種類」だけでなく大きさ・位置・向きまで扱う設定パネル全体を
+  // 指す文言にする(見出しと中身が乖離しているとの指摘を受けて変更)。
+  $("doorModalTitle").textContent = "建具を追加";
   $("btnDeleteDoor").style.display = "none";
   updateDoorModalUI();
   showModal("doorTypeModal");
@@ -3040,7 +3112,7 @@ function openDoorEditModal(room, index) {
   const d = room.doors[index];
   snapshot(); // 編集開始前の状態を残す(やめる/undoで復元できるように)
   pendingDoor = { room, existingIndex: index, type: d.type, widthMasu: d.widthMasu || defaultWidthMasuForType(d.type), flip: !!d.flip, swingOut: !!d.swingOut, original: { ...d } };
-  $("doorModalTitle").textContent = "建具の種類を変更";
+  $("doorModalTitle").textContent = "建具の設定";
   $("btnDeleteDoor").style.display = "block";
   updateDoorModalUI();
   showModal("doorTypeModal");
@@ -3173,8 +3245,16 @@ function ensureDoorVisible(room, door) {
   const widthMasu = Math.min(door.widthMasu || 0.85, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
   const doorWidth = Math.max(16, widthMasu * BASE_CELL * view.scale);
   const pad = 16;
-  const minX = center.x - doorWidth - pad, maxX = center.x + doorWidth + pad;
-  const minY = center.y - doorWidth - pad, maxY = center.y + doorWidth + pad;
+  // 弧は壁の片側にしか描かれないのに、以前はcenterを中心に左右・上下
+  // 対称の範囲で画面内判定をしており、何もはみ出していなくても過剰に
+  // パンしてしまっていた(再々調査で発見)。実際に弧が張り出す方向(nx,ny)を
+  // 使い、center〜振れ込み側の点(far)だけを含む非対称の範囲で判定する。
+  const windingSign = roomWindingSign(room);
+  let nx = -uy * windingSign, ny = ux * windingSign;
+  if (door.swingOut) { nx = -nx; ny = -ny; }
+  const farX = center.x + nx * doorWidth, farY = center.y + ny * doorWidth;
+  const minX = Math.min(center.x, farX) - pad, maxX = Math.max(center.x, farX) + pad;
+  const minY = Math.min(center.y, farY) - pad, maxY = Math.max(center.y, farY) + pad;
   let dx = 0, dy = 0;
   if (minX < 0) dx = -minX; else if (maxX > W) dx = W - maxX;
   if (minY < 0) dy = -minY; else if (maxY > H) dy = H - maxY;
@@ -3482,7 +3562,11 @@ function fallbackDownload(blob, filename) {
   link.href = url;
   link.download = filename;
   link.textContent = `📥 タップして保存: ${filename}`;
-  $("downloadReadyBanner").style.display = "flex";
+  const banner = $("downloadReadyBanner");
+  banner.style.display = "flex";
+  banner.classList.remove("banner-pop-in");
+  void banner.offsetWidth; // 再表示のたびにアニメーションを再生させるための強制リフロー
+  banner.classList.add("banner-pop-in");
 }
 $("downloadReadyClose").addEventListener("click", () => {
   $("downloadReadyBanner").style.display = "none";
