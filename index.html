@@ -454,6 +454,7 @@
     <div class="page-header">
       <button class="iconbtn" id="btnCloseProjectsPage" title="閉じる"><span>←</span></button>
       <h2>物件一覧</h2>
+      <button class="iconbtn" id="btnOpenTrash" title="ゴミ箱"><span>🗑</span><span class="cap">ゴミ箱</span></button>
       <button class="iconbtn" id="btnLogout" title="ログアウト"><span>🚪</span><span class="cap">ログアウト</span></button>
     </div>
     <div class="page-body">
@@ -462,6 +463,20 @@
     </div>
     <div class="modal-actions">
       <button class="btn primary" id="btnNewProject">＋ 新しい物件</button>
+    </div>
+  </div>
+</div>
+
+<!-- ゴミ箱: 削除した物件を復元・完全削除できるようにする(誤削除からの安全網) -->
+<div class="modal-overlay fullpage" id="trashModal">
+  <div class="modal">
+    <div class="page-header">
+      <button class="iconbtn" id="btnCloseTrashPage" title="閉じる"><span>←</span></button>
+      <h2>ゴミ箱</h2>
+    </div>
+    <div class="page-body">
+      <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">削除した物件はここに残ります。「復元」で元に戻せます。「完全に削除」は元に戻せません。</p>
+      <div id="trashList"></div>
     </div>
   </div>
 </div>
@@ -647,7 +662,7 @@ function queueWrite(fn, context) {
 function dispatchDiff(prev, next) {
   if (!currentUid) return;
   const prevById = {};
-  for (const name in prev) { const p = prev[name]; if (p && p.id) prevById[p.id] = { name, floors: p.floors || {} }; }
+  for (const name in prev) { const p = prev[name]; if (p && p.id) prevById[p.id] = { name, floors: p.floors || {}, deletedAt: p.deletedAt || null }; }
   const nextIds = new Set();
   for (const name in next) {
     const p = next[name];
@@ -674,13 +689,14 @@ function dispatchDiff(prev, next) {
     if (!prevEntry) {
       // 新規プロジェクト: フルセットで作成
       queueWrite(() => setDoc(doc(projectsCollectionRef(), p.id), {
-        name, floors: p.floors || {}, updatedAt: serverTimestamp(),
+        name, floors: p.floors || {}, deletedAt: p.deletedAt || null, updatedAt: serverTimestamp(),
       }), `物件作成:${name}`);
       continue;
     }
     const patch = {};
     let changed = false;
     if (prevEntry.name !== name) { patch.name = name; changed = true; }
+    if ((prevEntry.deletedAt || null) !== (p.deletedAt || null)) { patch.deletedAt = p.deletedAt || null; changed = true; }
     const nextFloors = p.floors || {};
     const prevFloors = prevEntry.floors || {};
     for (const floorName in nextFloors) {
@@ -731,7 +747,7 @@ async function loadAllProjectsFromCloud(uid) {
   const cache = {};
   snap.forEach((docSnap) => {
     const data = docSnap.data();
-    cache[data.name] = { id: docSnap.id, floors: data.floors || {} };
+    cache[data.name] = { id: docSnap.id, floors: data.floors || {}, deletedAt: data.deletedAt || null };
   });
   allProjectsCache = cache;
 }
@@ -3896,11 +3912,13 @@ function renderProjectList(filterText) {
   const all = loadAllProjects();
   const list = $("projectList"); list.innerHTML = "";
   const q = (filterText || "").trim().toLowerCase();
+  // ゴミ箱に入れた物件(deletedAt有り)は一覧には出さない(ゴミ箱モーダルの方に表示)
+  const activeNames = Object.keys(all).filter((name) => !all[name].deletedAt);
   // 名前の五十音・アルファベット順に並べ、多数の物件から目的のものを探しやすくする
-  const names = Object.keys(all)
+  const names = activeNames
     .filter((name) => !q || name.toLowerCase().includes(q))
     .sort((a, b) => a.localeCompare(b, "ja"));
-  if (Object.keys(all).length === 0) {
+  if (activeNames.length === 0) {
     list.innerHTML = `<p style="color:#7c8996;font-size:13px;">保存された物件はまだありません</p>`;
   } else if (names.length === 0) {
     list.innerHTML = `<p style="color:#7c8996;font-size:13px;">「${filterText}」に一致する物件が見つかりません</p>`;
@@ -3934,8 +3952,21 @@ function renderProjectList(filterText) {
     const delBtn = document.createElement("button");
     delBtn.textContent = "削除"; delBtn.style.color = "#e2492c";
     delBtn.addEventListener("click", () => {
-      openConfirm("物件を削除", `「${name}」を削除しますか？`, () => {
-        delete all[name]; saveAllProjects(all); renderProjectList($("projectSearchInput").value);
+      // 誤って削除しても「ゴミ箱」から復元できるよう、即座には消さずdeletedAtを
+      // 付けるだけにする(実データはそのまま残す)。
+      openConfirm("物件を削除", `「${name}」を削除しますか？(ゴミ箱から復元できます)`, () => {
+        all[name].deletedAt = Date.now();
+        saveAllProjects(all); renderProjectList($("projectSearchInput").value);
+        showHint(`「${name}」をゴミ箱に移動しました`);
+        // 今まさに開いていた物件を削除した場合、state.rooms等が削除前の内容を
+        // 保持したままだと、次のautoSave(閉じる時のbeforeunload等)で
+        // 「新規プロジェクト」として復活してしまう(実測で確認したバグ)。
+        // 開いていた物件を削除したら、その場でstateを空にしてこれを防ぐ。
+        if (state.projectName === name) {
+          state.projectName = ""; state.rooms = []; state.floorName = "1F";
+          history = []; future = []; updateUndoRedoButtons();
+          render();
+        }
       });
     });
     row.appendChild(openBtn); row.appendChild(renameBtn); row.appendChild(delBtn);
@@ -3943,6 +3974,57 @@ function renderProjectList(filterText) {
   });
 }
 $("projectSearchInput").addEventListener("input", () => renderProjectList($("projectSearchInput").value));
+
+// ゴミ箱: 削除した物件を一定期間そのまま残し、誤削除から復元できるようにする。
+function renderTrashList() {
+  const all = loadAllProjects();
+  const list = $("trashList"); list.innerHTML = "";
+  const names = Object.keys(all)
+    .filter((name) => all[name].deletedAt)
+    .sort((a, b) => (all[b].deletedAt || 0) - (all[a].deletedAt || 0)); // 最近削除したものを上に
+  if (names.length === 0) {
+    list.innerHTML = `<p style="color:#7c8996;font-size:13px;">ゴミ箱は空です</p>`;
+    return;
+  }
+  names.forEach((name) => {
+    const row = document.createElement("div");
+    row.className = "project-item";
+    const d = new Date(all[name].deletedAt);
+    row.innerHTML = `<div class="meta"><div class="name">${name}</div><div class="sub">${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} に削除</div></div>`;
+    const restoreBtn = document.createElement("button");
+    restoreBtn.textContent = "復元";
+    restoreBtn.addEventListener("click", () => {
+      const cur = loadAllProjects();
+      if (!cur[name]) return;
+      cur[name].deletedAt = null;
+      saveAllProjects(cur);
+      renderTrashList();
+      renderProjectList($("projectSearchInput").value);
+      showHint(`「${name}」を復元しました`);
+    });
+    const purgeBtn = document.createElement("button");
+    purgeBtn.textContent = "完全に削除"; purgeBtn.style.color = "#e2492c";
+    purgeBtn.addEventListener("click", () => {
+      openConfirm("完全に削除", `「${name}」を完全に削除します。この操作は元に戻せません。よろしいですか？`, () => {
+        const cur = loadAllProjects();
+        delete cur[name];
+        saveAllProjects(cur);
+        renderTrashList();
+        // 削除ボタンと同じ理由(autoSaveによる復活防止)で、万一これが現在開いている
+        // 物件と同名だった場合に備えて念のため同じガードをここにも入れておく。
+        if (state.projectName === name) {
+          state.projectName = ""; state.rooms = []; state.floorName = "1F";
+          history = []; future = []; updateUndoRedoButtons();
+          render();
+        }
+      });
+    });
+    row.appendChild(restoreBtn); row.appendChild(purgeBtn);
+    list.appendChild(row);
+  });
+}
+$("btnOpenTrash").addEventListener("click", () => { renderTrashList(); showModal("trashModal"); });
+$("btnCloseTrashPage").addEventListener("click", () => hideModal("trashModal"));
 $("btnNewProject").addEventListener("click", () => {
   openTextInput("新しい物件名", "", (name) => {
     autoSave(); // 切り替え前に今の物件の作業を保存
