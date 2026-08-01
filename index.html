@@ -454,6 +454,7 @@
     <div class="page-header">
       <button class="iconbtn" id="btnCloseProjectsPage" title="閉じる"><span>←</span></button>
       <h2>物件一覧</h2>
+      <button class="iconbtn" id="btnExportBackup" title="全物件をバックアップ"><span>💾</span><span class="cap">バックアップ</span></button>
       <button class="iconbtn" id="btnOpenTrash" title="ゴミ箱"><span>🗑</span><span class="cap">ゴミ箱</span></button>
       <button class="iconbtn" id="btnLogout" title="ログアウト"><span>🚪</span><span class="cap">ログアウト</span></button>
     </div>
@@ -3668,6 +3669,24 @@ $("btnExportAllFloors").addEventListener("click", () => {
   } catch (err) {
     console.error(err);
     showHint(`全階まとめての書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
+  }
+});
+
+// 画像(見た目)だけでなく、間取りの生データそのものを手元にも残せるようにする
+// (Firestore側の障害・誤操作からの手動バックアップ。ゴミ箱に入れた物件も含めて
+// まとめて書き出す=復元前の状態も残しておいた方が安全なため)。
+$("btnExportBackup").addEventListener("click", () => {
+  try {
+    const all = loadAllProjects();
+    const json = JSON.stringify(all, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+    saveOrShareFile(blob, `madori_バックアップ_${stamp}.json`);
+    showHint(`${Object.keys(all).length}件の物件をバックアップしました`);
+  } catch (err) {
+    console.error(err);
+    showHint(`バックアップの書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
   }
 });
 
