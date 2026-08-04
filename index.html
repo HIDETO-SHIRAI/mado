@@ -1227,8 +1227,11 @@ function render() {
   // 外開きの開き戸は、部屋の外(隣室・屋外側)へ意図的にスイングするため、
   // どの部屋がクリップも無く最後に描く(そうしないと、後から描かれる別の
   // 部屋の塗りつぶしの下に隠れてしまうことがあるため)。
+  // U字・コの字型の階段の矢印も同じ理由(部屋の凹みを通ることがある)で、
+  // クリップの外からここで描く(drawStairArrowIfNeeded参照)。
   state.rooms.forEach((room) => {
     (room.doors || []).filter((d) => isOutwardHingeDoor(d)).forEach((d) => drawDoorMark(room, d));
+    drawStairArrowIfNeeded(room);
   });
   if (currentTool === "wall" && editingRoom) { drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom); }
 
@@ -1526,9 +1529,15 @@ function drawStairSymbol(room) {
     if (reflexCount === 1) {
       // L字は両方の脚が既に形そのもので縦横決まっているため、軸の入れ替えは
       // 意味を持たない(90°/270°は180°/0°とそれぞれ同じ扱いにする=矢印の反転のみ)。
+      // 矢印の経路も実際の2脚の中心線から求めるため、常に部屋の形状内に収まる。
       drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed);
     } else {
-      drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount, axisSwapped, reversed);
+      // コの字・U字等は矢印が直線1本の簡易近似のため、形状によっては部屋の
+      // 凹み(輪郭の外)を通ることがある。踏み板はここで描くが、矢印は
+      // drawStairArrowIfNeeded()がrender()側で部屋のクリップの外から
+      // 別途描く(このままここで描くと凹み部分で矢印が消えてしまう不具合が
+      // あった。実機検証で発見)。
+      drawGenericStairTreads(pts, minX, maxX, minY, maxY, stepCount, axisSwapped);
     }
     return;
   }
@@ -1572,9 +1581,8 @@ function drawStairSymbol(room) {
 // コの字・Z字等、反射頂点が2つ以上(または0)ある複雑な形の階段用フォールバック。
 // 実際の部屋の輪郭にクリップした上で、外接矩形全体に踏み板の平行線を敷くため、
 // 部屋の一部が空白のまま描かれない(=drawBentStairSymbolの帯モデルが前提と
-// する「反射頂点1つのL字」から外れた形で発生していた不具合)。矢印は長辺方向の
-// 直線1本の簡易近似(実際の折れ方までは表現しないが、視覚的な破綻は避けられる)。
-function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount, axisSwapped, reversed) {
+// する「反射頂点1つのL字」から外れた形で発生していた不具合)。
+function drawGenericStairTreads(pts, minX, maxX, minY, maxY, stepCount, axisSwapped) {
   const w = maxX - minX, h = maxY - minY;
   const vertical = axisSwapped ? !(h >= w) : (h >= w);
   const treadCount = stepCount;
@@ -1596,7 +1604,16 @@ function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount, axisSwap
     }
   }
   dctx.restore();
+}
 
+// 上記フォールバックの矢印: 長辺方向の直線1本の簡易近似(実際の折れ方までは
+// 表現しないが、視覚的な破綻は避けられる)。U字等では部屋の凹み(輪郭の外)を
+// 通ることがあるため、部屋自身のクリップの外(render()の後段、外開き建具と
+// 同じタイミング)で描く必要がある。そのためdrawGenericStairTreadsとは別関数にし、
+// drawStairArrowIfNeeded()から呼ぶ。
+function drawGenericStairArrow(minX, maxX, minY, maxY, axisSwapped, reversed) {
+  const w = maxX - minX, h = maxY - minY;
+  const vertical = axisSwapped ? !(h >= w) : (h >= w);
   dctx.save();
   dctx.strokeStyle = "#2f6fed"; dctx.lineWidth = 2.4;
   if (vertical) {
@@ -1621,6 +1638,26 @@ function drawGenericStairSymbol(pts, minX, maxX, minY, maxY, stepCount, axisSwap
     dctx.stroke();
   }
   dctx.restore();
+}
+
+// U字・コの字等(反射頂点2つ以上、または0)の階段だけ、矢印を部屋のクリップの
+// 外(render()の後段)で追加描画する。単純な矩形・L字の折れ階段は矢印が形状内に
+// 収まるため、既にdrawStairSymbol内で描画済み(ここでは何もしない)。
+function drawStairArrowIfNeeded(room) {
+  if (room.typeKey !== "kaidan") return;
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  if (pts.length <= 4) return;
+  const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
+  const minY = Math.min(...pts.map((p) => p.y)), maxY = Math.max(...pts.map((p) => p.y));
+  const eps = 0.5;
+  const reflexCount = pts.filter((p) =>
+    p.x > minX + eps && p.x < maxX - eps && p.y > minY + eps && p.y < maxY - eps
+  ).length;
+  if (reflexCount === 1) return;
+  const rotation = room.stairRotation != null ? room.stairRotation : (room.stairFlip ? 180 : 0);
+  const axisSwapped = rotation === 90 || rotation === 270;
+  const reversed = rotation === 180 || rotation === 270;
+  drawGenericStairArrow(minX, maxX, minY, maxY, axisSwapped, reversed);
 }
 
 // L字・コの字等の折れ階段用: 反射頂点(部屋の外接矩形の内側に食い込んでいる頂点)を
