@@ -978,6 +978,11 @@ const gctx = gridCanvas.getContext("2d");
 const dctx = drawCanvas.getContext("2d");
 
 let W = 0, H = 0;
+// 画像保存中(buildExportCanvas)だけtrueにする。保存画像は印刷・共有先での
+// 閲覧を想定し、拡大縮小の対話操作ができないため、部屋名・畳数の文字を
+// 通常の画面表示より大きめに描く(EXPORT_LABEL_BOOST参照)。
+let isExportRender = false;
+const EXPORT_LABEL_BOOST = 4;
 
 /* ---------------- ビュー変換(パン・ズーム) ---------------- */
 let view = { scale: 1, offX: 0, offY: 0 };
@@ -1373,8 +1378,10 @@ function drawRoomPolygon(room) {
     let blockH = lns.length * (size + 3);
     // 保存画像で「部屋名・畳数の文字が小さくて読みづらい」との指摘を受け、
     // 縮小時の下限を8px→10pxに引き上げた(狭い部屋では多少はみ出しても、
-    // 読みやすさを優先する)。
-    while ((widest > maxAllowed || blockH > maxAllowedH) && size > 10) {
+    // 読みやすさを優先する)。画像保存中はさらにEXPORT_LABEL_BOOST分だけ
+    // 下限を引き上げ、画面表示より一回り大きい文字で保存されるようにする。
+    const minSize = 10 + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+    while ((widest > maxAllowed || blockH > maxAllowedH) && size > minSize) {
       size -= 1;
       dctx.font = `${size}px -apple-system, sans-serif`;
       widest = Math.max(...lns.map((l) => dctx.measureText(l).width));
@@ -1383,7 +1390,7 @@ function drawRoomPolygon(room) {
     return { lines: lns, size, fits: widest <= maxAllowed && blockH <= maxAllowedH };
   }
 
-  const startSize = areaPx < 2400 ? 13 : 15;
+  const startSize = (areaPx < 2400 ? 13 : 15) + (isExportRender ? EXPORT_LABEL_BOOST : 0);
   let result;
   if (type.hideTatami) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
@@ -3541,7 +3548,9 @@ function buildExportCanvas(scale, transparent) {
   drawCanvas.width = contentW * scale; drawCanvas.height = contentH * scale;
   drawCanvas.style.width = contentW + "px"; drawCanvas.style.height = contentH + "px";
   dctx.setTransform(scale, 0, 0, scale, 0, 0);
+  isExportRender = true;
   render();
+  isExportRender = false;
 
   // 外壁の膨張(dilate)で外側にはみ出す分の余白
   const pad = Math.max(4, 7 * scale) + 6;
