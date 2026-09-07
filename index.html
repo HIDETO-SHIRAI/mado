@@ -163,6 +163,14 @@
     padding: 10px 12px; border-bottom: 1px solid #e3e8ee;
   }
   .page-header h2 { margin: 0; font-size: 16px; flex: 1; }
+  /* 物件はusers/{uid}配下にアカウント別で保存されるため、別のアカウントでログイン
+     すると一覧が空になる。実際に「過去のデータが消えた」と誤認する事故が起きたため、
+     今どのアカウントで入っているかを物件一覧に常に表示する。 */
+  .account-line {
+    font-size: 12px; color: #7c8996; margin-bottom: 8px;
+    word-break: break-all; flex: 0 0 auto;
+  }
+  .account-line b { color: var(--text); font-weight: 700; }
   .page-body {
     flex: 1 1 auto; display: flex; flex-direction: column;
     overflow: hidden; padding: 12px 16px; min-height: 0;
@@ -459,6 +467,7 @@
       <button class="iconbtn" id="btnLogout" title="ログアウト"><span>🚪</span><span class="cap">ログアウト</span></button>
     </div>
     <div class="page-body">
+      <div class="account-line">ログイン中：<b id="currentAccountEmail">—</b></div>
       <input type="text" class="text-input" id="projectSearchInput" placeholder="物件名で検索" style="margin-bottom:8px;">
       <div id="projectList"></div>
     </div>
@@ -4000,7 +4009,7 @@ function renderProjectList(filterText) {
     .filter((name) => !q || name.toLowerCase().includes(q))
     .sort((a, b) => a.localeCompare(b, "ja"));
   if (activeNames.length === 0) {
-    list.innerHTML = `<p style="color:#7c8996;font-size:13px;">保存された物件はまだありません</p>`;
+    list.innerHTML = `<p style="color:#7c8996;font-size:13px;">保存された物件はまだありません。<br><br>以前に保存した物件が見当たらない場合は、上の「ログイン中」が普段お使いのアカウントかご確認ください。物件はアカウントごとに保存されるため、別のアカウントでログインすると一覧は空になります。</p>`;
   } else if (names.length === 0) {
     list.innerHTML = `<p style="color:#7c8996;font-size:13px;">「${filterText}」に一致する物件が見つかりません</p>`;
   }
@@ -4239,6 +4248,14 @@ function showAppUI() {
   $("loginGate").classList.remove("show");
   $("app").classList.remove("app-hidden");
 }
+// 物件一覧に「ログイン中: メールアドレス」を表示する。物件はアカウント(uid)ごとに
+// 保存されるため、別のアカウントでログインすると一覧が空になり、データそのものが
+// 消えたように見える。実際にこの取り違えが起きたので、常に判別できるようにする。
+function setCurrentAccountLabel(user) {
+  const el = $("currentAccountEmail");
+  if (!el) return;
+  el.textContent = (user && user.email) || "(メールアドレス不明)";
+}
 function hideAppUI() {
   hideAllModalsAndBanners();
   $("app").classList.add("app-hidden");
@@ -4336,6 +4353,7 @@ whenCloudReady(() => {
   window.Cloud.onReady(async (user) => {
     if (!user) { hideAppUI(); return; }
     showAppUI();
+    setCurrentAccountLabel(user);
     resize();
     updateUndoRedoButtons();
     updateCompassVisual();
