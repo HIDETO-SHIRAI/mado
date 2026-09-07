@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
+     キャッシュから出し続けていないかを起動時に確かめるために使う。
+     ★公開(push)のたびにこの値を更新すること。 -->
+<meta name="app-version" content="2026-09-08-1">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -362,6 +366,17 @@
   <button id="downloadReadyClose" style="touch-action:manipulation;background:none;border:none;color:#aab3bd;font-size:14px;padding:8px;">閉じる</button>
 </div>
 
+<!-- 新しい版が公開されているのに、ブラウザが古いHTMLをキャッシュから表示し続ける
+     ことがある。特にiOSでホーム画面に追加したアプリはSafari本体と別のキャッシュを
+     持つため更新が届きにくい。実際に7月末の版を掴んだままになり、追加したはずの
+     機能が無く「物件一覧が空=データが消えた」と誤認する事故が起きたため、
+     古い版のときは本人に知らせて更新できるようにする。 -->
+<div id="updateBanner" style="display:none;position:fixed;left:12px;right:12px;top:12px;background:#1c2733;padding:16px;z-index:2147483647;border-radius:14px;flex-direction:column;gap:10px;align-items:stretch;box-shadow:0 4px 20px rgba(0,0,0,.4);">
+  <div style="color:#fff;font-size:14px;line-height:1.6;">新しい版が公開されています。<br>古い版のままだと、追加された機能が使えません。</div>
+  <button id="updateReloadBtn" style="touch-action:manipulation;background:#2f6fed;border:none;border-radius:10px;color:#fff;font-weight:700;font-size:16px;padding:16px;">最新版に更新する</button>
+  <button id="updateBannerClose" style="touch-action:manipulation;background:none;border:none;color:#aab3bd;font-size:14px;padding:8px;">あとで</button>
+</div>
+
 <!-- 点を置く細かさ選択モーダル -->
 <div class="modal-overlay" id="snapModal">
   <div class="modal">
@@ -467,7 +482,7 @@
       <button class="iconbtn" id="btnLogout" title="ログアウト"><span>🚪</span><span class="cap">ログアウト</span></button>
     </div>
     <div class="page-body">
-      <div class="account-line">ログイン中：<b id="currentAccountEmail">—</b></div>
+      <div class="account-line">ログイン中：<b id="currentAccountEmail">—</b><span id="appVersionLabel" style="margin-left:8px;opacity:.75;"></span></div>
       <input type="text" class="text-input" id="projectSearchInput" placeholder="物件名で検索" style="margin-bottom:8px;">
       <div id="projectList"></div>
     </div>
@@ -4256,6 +4271,41 @@ function setCurrentAccountLabel(user) {
   if (!el) return;
   el.textContent = (user && user.email) || "(メールアドレス不明)";
 }
+
+// ---- 古い版を掴んだままになっていないかの確認 ----
+// このHTMLに埋め込まれた版(headのmeta)。公開のたびに更新する。
+const APP_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || "?";
+const VERSION_CHECK_KEY = "madori_last_version_check";
+function showUpdateBanner() {
+  const b = $("updateBanner");
+  if (b) b.style.display = "flex";
+}
+// サーバー上の版と比べ、違えば知らせる。版はhead内にあるので先頭だけ取れば足りる
+// (Rangeに対応していない場合は全体が返るが、それでも正しく動く)。通信できない
+// ときは何もしない(電波の弱い現場でも使えるようにするため)。1日1回までに抑える。
+async function checkForNewVersion() {
+  try {
+    const last = Number(localStorage.getItem(VERSION_CHECK_KEY) || 0);
+    if (Date.now() - last < 24 * 60 * 60 * 1000) return;
+    const res = await fetch(location.pathname + "?_v=" + Date.now(), {
+      cache: "reload",
+      headers: { Range: "bytes=0-2000" },
+    });
+    if (!res.ok && res.status !== 206) return;
+    const head = await res.text();
+    const m = head.match(/name="app-version"\s+content="([^"]+)"/);
+    try { localStorage.setItem(VERSION_CHECK_KEY, String(Date.now())); } catch { /* 保存できなくても確認自体は行える */ }
+    if (m && m[1] !== APP_VERSION) showUpdateBanner();
+  } catch { /* オフライン等。何もしない */ }
+}
+$("updateReloadBtn").addEventListener("click", () => {
+  // 同じURLの再読み込みでは古いキャッシュが再び使われることがあるため、
+  // クエリを変えて別のURLとして取得し直す(実際にこの方法で復旧できた)。
+  location.replace(location.pathname + "?v=" + Date.now());
+});
+$("updateBannerClose").addEventListener("click", () => {
+  $("updateBanner").style.display = "none";
+});
 function hideAppUI() {
   hideAllModalsAndBanners();
   $("app").classList.add("app-hidden");
