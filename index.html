@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-08-3">
+<meta name="app-version" content="2026-09-08-4">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -353,6 +353,7 @@
     <button class="tool" id="btnExport"><span class="em">🖼️</span>画像で保存</button>
     <button class="tool" id="btnExportTransparent"><span class="em">🎞️</span>透過で保存</button>
     <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span>全階まとめて保存</button>
+    <button class="tool" id="btnExportDrive"><span class="em">☁️</span>ドライブに保存</button>
     <button class="tool" id="btnSave"><span class="em">💾</span>この階を保存</button>
   </div>
 </div>
@@ -488,6 +489,22 @@
     </div>
     <div class="modal-actions">
       <button class="btn primary" id="btnNewProject">＋ 新しい物件</button>
+    </div>
+  </div>
+</div>
+
+<!-- 共有ドライブ「SA社員チーム」の物件と紐づける画面。一度選ぶとその物件に覚えさせ、
+     以後は「ドライブに保存」を押すだけで、その物件の販売用資料へ入るようにする。 -->
+<div class="modal-overlay fullpage" id="drivePropModal">
+  <div class="modal">
+    <div class="page-header">
+      <button class="iconbtn" id="btnCloseDriveProp" title="閉じる"><span>←</span></button>
+      <h2>ドライブの物件を選ぶ</h2>
+    </div>
+    <div class="page-body">
+      <div class="account-line">選ぶと、この間取り図がその物件の「販売用資料」に入るようになります。<b id="drivePropCurrent"></b></div>
+      <input type="text" class="text-input" id="drivePropSearch" placeholder="物件名で検索" style="margin-bottom:8px;">
+      <div id="drivePropList"></div>
     </div>
   </div>
 </div>
@@ -687,7 +704,7 @@ function queueWrite(fn, context) {
 function dispatchDiff(prev, next) {
   if (!currentUid) return;
   const prevById = {};
-  for (const name in prev) { const p = prev[name]; if (p && p.id) prevById[p.id] = { name, floors: p.floors || {}, deletedAt: p.deletedAt || null }; }
+  for (const name in prev) { const p = prev[name]; if (p && p.id) prevById[p.id] = { name, floors: p.floors || {}, deletedAt: p.deletedAt || null, driveProperty: p.driveProperty || null }; }
   const nextIds = new Set();
   for (const name in next) {
     const p = next[name];
@@ -714,7 +731,8 @@ function dispatchDiff(prev, next) {
     if (!prevEntry) {
       // 新規プロジェクト: フルセットで作成
       queueWrite(() => setDoc(doc(projectsCollectionRef(), p.id), {
-        name, floors: p.floors || {}, deletedAt: p.deletedAt || null, updatedAt: serverTimestamp(),
+        name, floors: p.floors || {}, deletedAt: p.deletedAt || null,
+        driveProperty: p.driveProperty || null, updatedAt: serverTimestamp(),
       }), `物件作成:${name}`);
       continue;
     }
@@ -722,6 +740,10 @@ function dispatchDiff(prev, next) {
     let changed = false;
     if (prevEntry.name !== name) { patch.name = name; changed = true; }
     if ((prevEntry.deletedAt || null) !== (p.deletedAt || null)) { patch.deletedAt = p.deletedAt || null; changed = true; }
+    // 共有ドライブの物件との紐づけ。中身のあるオブジェクトなのでJSONにして比べる。
+    if (JSON.stringify(prevEntry.driveProperty || null) !== JSON.stringify(p.driveProperty || null)) {
+      patch.driveProperty = p.driveProperty || null; changed = true;
+    }
     const nextFloors = p.floors || {};
     const prevFloors = prevEntry.floors || {};
     for (const floorName in nextFloors) {
@@ -772,9 +794,34 @@ async function loadAllProjectsFromCloud(uid) {
   const cache = {};
   snap.forEach((docSnap) => {
     const data = docSnap.data();
-    cache[data.name] = { id: docSnap.id, floors: data.floors || {}, deletedAt: data.deletedAt || null };
+    cache[data.name] = {
+      id: docSnap.id, floors: data.floors || {}, deletedAt: data.deletedAt || null,
+      driveProperty: data.driveProperty || null, // 共有ドライブのどの物件フォルダか
+    };
   });
   allProjectsCache = cache;
+}
+
+// ---- 共有ドライブ「SA社員チーム」との連携 ----
+// ブラウザから共有ドライブは読み書きできない(OAuthの制約)ため、Firestoreを
+// 郵便受けにして、パソコン側の常駐に運んでもらう。
+//
+// 物件フォルダの一覧。常駐(sync_properties.js)が shared/properties へ写している。
+async function loadDriveProperties() {
+  const snap = await getDoc(doc(db, "shared", "properties"));
+  if (!snap.exists()) return [];
+  return (snap.data() || {}).物件 || [];
+}
+// 画像を共有ドライブへ置いてもらう依頼。自分の users/{uid}/exports に入れる
+// (ルールで本人だけが読み書きできるようにしてある。sharedは読み取り専用)。
+// 常駐が拾って「販売用資料」に保存し、済んだらこの依頼を消す。
+async function requestDriveExport(entry) {
+  if (!currentUid) throw new Error("ログインしていません");
+  const id = crypto.randomUUID();
+  await setDoc(doc(collection(db, "users", currentUid, "exports"), id), {
+    ...entry, 作成日時: serverTimestamp(), 状態: "待ち",
+  });
+  return id;
 }
 
 // 初回ログイン時、既存のlocalStorageデータがありクラウド側が空なら取り込みを提案する。
@@ -850,6 +897,8 @@ window.Cloud = {
     scheduleSync(prev);
   },
   loadAllProjectsFromCloud,
+  loadDriveProperties,
+  requestDriveExport,
   migrateLocalDataIfNeeded,
   mapAuthError,
   async signInEmail(email, password) { return signInWithEmailAndPassword(auth, email, password); },
@@ -3771,6 +3820,102 @@ $("btnExportAllFloors").addEventListener("click", () => {
   }
 });
 
+/* ---------------- 共有ドライブへ保存 ---------------- */
+// ブラウザから共有ドライブへは直接書けない(OAuthの制約)ので、Firestoreの郵便受け
+// (users/{uid}/exports)に依頼を置き、パソコン側の常駐に運んでもらう。
+let drivePropsCache = null;      // 物件フォルダの一覧(一度読んだら覚える)
+let drivePropPickCallback = null;
+
+function renderDrivePropList(q) {
+  const list = $("drivePropList");
+  list.innerHTML = "";
+  const all = drivePropsCache || [];
+  const key = (q || "").trim().toLowerCase();
+  const items = all.filter((p) => !key || (p.名前 || "").toLowerCase().includes(key));
+  if (items.length === 0) {
+    list.innerHTML = `<p style="color:#7c8996;font-size:13px;">${all.length === 0
+      ? "物件の一覧がまだ届いていません。パソコン側の取り込みを待ってください"
+      : `「${q}」に一致する物件が見つかりません`}</p>`;
+    return;
+  }
+  items.forEach((p) => {
+    const row = document.createElement("div");
+    row.className = "project-item";
+    row.innerHTML = `<div class="thumb"><span class="thumb-empty">📁</span></div><div class="meta"><div class="name">${p.名前}</div><div class="sub">${p.段階}</div></div>`;
+    const btn = document.createElement("button");
+    btn.textContent = "選ぶ";
+    btn.addEventListener("click", () => {
+      hideModal("drivePropModal");
+      const cb = drivePropPickCallback; drivePropPickCallback = null;
+      if (cb) cb({ 段階: p.段階, 名前: p.名前 });
+    });
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+}
+
+// projectName を渡さなければ、いま開いている物件が対象。
+async function openDrivePropPicker(onPick, projectName) {
+  drivePropPickCallback = onPick;
+  $("drivePropSearch").value = "";
+  const cur = (loadAllProjects()[projectName || state.projectName] || {}).driveProperty;
+  $("drivePropCurrent").textContent = cur ? `いまは「${cur.名前}」に紐づいています。` : "";
+  $("drivePropList").innerHTML = `<p style="color:#7c8996;font-size:13px;">読み込んでいます…</p>`;
+  showModal("drivePropModal");
+  try {
+    if (!drivePropsCache) drivePropsCache = await window.Cloud.loadDriveProperties();
+    renderDrivePropList("");
+  } catch (err) {
+    console.error(err);
+    $("drivePropList").innerHTML = `<p style="color:#7c8996;font-size:13px;">物件の一覧を読めませんでした。${err && err.message ? err.message : ""}</p>`;
+  }
+}
+$("drivePropSearch").addEventListener("input", (e) => renderDrivePropList(e.target.value));
+$("btnCloseDriveProp").addEventListener("click", () => { drivePropPickCallback = null; hideModal("drivePropModal"); });
+
+// この階の間取り図を透過PNGにして、依頼としてFirestoreに置く。
+async function sendFloorToDrive(prop) {
+  try {
+    const out = buildExportCanvas(2, true); // 販売資料に重ねて使うので透過で作る
+    const dataUrl = out.toDataURL("image/png");
+    // Firestoreの1ドキュメントは1MBまで。データURLはbase64なので元の約1.33倍になる。
+    if (dataUrl.length > 900000) {
+      showHint("画像が大きすぎてドライブへ送れません。階を分けて保存してください", true);
+      return;
+    }
+    showHint("ドライブへ送っています…", true);
+    await window.Cloud.requestDriveExport({
+      物件: prop,
+      ファイル名: `${state.projectName}_${state.floorName}_間取り図.png`,
+      画像: dataUrl,
+    });
+    showHint(`「${prop.名前}」の販売用資料へ送りました。反映まで少し待ってください`, true);
+  } catch (err) {
+    console.error(err);
+    showHint(`ドライブへ送れませんでした: ${err && err.message ? err.message : err}`, true);
+  }
+}
+
+// 物件と共有ドライブのフォルダを結びつけて覚える(物件一覧からの変更もここを通る)。
+function linkProjectToDrive(projectName, picked) {
+  const all = loadAllProjects();
+  if (!all[projectName]) return;
+  all[projectName].driveProperty = picked;
+  saveAllProjects(all);
+}
+
+$("btnExportDrive").addEventListener("click", () => {
+  autoSave(); // いまの作業を保存してから紐づけを触る
+  const linked = (loadAllProjects()[state.projectName] || {}).driveProperty;
+  if (linked) { sendFloorToDrive(linked); return; }
+  // まだ紐づいていなければ、その場で選んでもらい、覚えてから送る
+  const target = state.projectName;
+  openDrivePropPicker((picked) => {
+    linkProjectToDrive(target, picked);
+    sendFloorToDrive(picked);
+  });
+});
+
 // 画像(見た目)だけでなく、間取りの生データそのものを手元にも残せるようにする
 // (Firestore側の障害・誤操作からの手動バックアップ。ゴミ箱に入れた物件も含めて
 // まとめて書き出す=復元前の状態も残しておいた方が安全なため)。
@@ -4061,7 +4206,21 @@ function renderProjectList(filterText) {
     const thumbHtml = thumbUrl
       ? `<img src="${thumbUrl}" alt="">`
       : `<span class="thumb-empty">🏠</span>`;
-    row.innerHTML = `<div class="thumb">${thumbHtml}</div><div class="meta"><div class="name">${name}</div><div class="sub">${floors.length}階分保存済み</div></div>`;
+    const link = all[name].driveProperty;
+    row.innerHTML = `<div class="thumb">${thumbHtml}</div><div class="meta"><div class="name">${name}</div><div class="sub">${floors.length}階分保存済み${link ? `<br>☁️ ${link.名前}` : ""}</div></div>`;
+    // 共有ドライブのどの物件へ保存するかを、ここで結び直せるようにする
+    // (「ドライブに保存」で初回に選んだあと、間違いに気づいたときの直し口)。
+    const linkBtn = document.createElement("button");
+    linkBtn.textContent = "☁️";
+    linkBtn.title = "ドライブの物件と紐づける";
+    linkBtn.addEventListener("click", () => {
+      openDrivePropPicker((picked) => {
+        linkProjectToDrive(name, picked);
+        renderProjectList($("projectSearchInput").value);
+        showHint(`「${name}」を「${picked.名前}」に紐づけました`, true);
+      }, name);
+    });
+    row.appendChild(linkBtn);
     const openBtn = document.createElement("button");
     openBtn.textContent = "開く";
     openBtn.addEventListener("click", () => {
