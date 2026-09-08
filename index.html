@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-08-2">
+<meta name="app-version" content="2026-09-08-3">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -1420,9 +1420,12 @@ function drawRoomPolygon(room) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
     result = fitLines(type.label, startSize);
   } else {
-    result = fitLines(areaPx < 1600 ? `${room.tatami}帖` : `${type.label}\n${room.tatami}帖`, startSize);
+    // 和室は畳が実際に敷いてあるので実寸だが、それ以外は畳に換算した目安なので
+    // 「約」を付ける(2026-09-08 笹原さんの要望)。
+    const tatamiText = (type.key === "washitsu" ? "" : "約") + `${room.tatami}帖`;
+    result = fitLines(areaPx < 1600 ? tatamiText : `${type.label}\n${tatamiText}`, startSize);
     if (!result.fits && result.lines.length > 1) {
-      result = fitLines(`${room.tatami}帖`, startSize);
+      result = fitLines(tatamiText, startSize);
     }
   }
   dctx.font = `${result.size}px -apple-system, sans-serif`;
@@ -1958,7 +1961,13 @@ function defaultFixtureGridPos(room) {
   return { gx: room.points[0].gx, gy: room.points[0].gy };
 }
 function fixtureGridPos(room) { return room.fixturePos || defaultFixtureGridPos(room); }
+// ★設備の簡易線画は「このレベルならいらない」という指摘を受けて止めている
+//   (2026-09-08 笹原さん)。描く仕組みは丸ごと残してあるので、また出したく
+//   なったらこの定数を true に戻すだけでよい。位置・回転のハンドルもこの判定の
+//   先にあるので、まとめて出なくなる。
+const SHOW_ROOM_FIXTURES = false;
 function roomHasFixture(room) {
+  if (!SHOW_ROOM_FIXTURES) return false;
   return FIXTURE_ROOM_KEYS.includes(room.typeKey) && polygonScreenArea(room.points) >= 900;
 }
 // 設備アイコンの向き(度数、0=初期の正立方向)。位置と同様にドラッグで変えられる。
@@ -3472,6 +3481,10 @@ $("btnDebugExport").addEventListener("click", async () => {
 // 不要なので、保存(画像)では常に含めず白背景+部屋のみで書き出す。
 // マイソク等の完成図には方位が必須(全ペルソナ評価で指摘)。画面上のコンパスUIは
 // DOM要素でエクスポート画像に写らないため、保存時だけ別途キャンバスに描き足す。
+// ★保存画像の方位磁針は「いらない」という指摘を受けて止めている(2026-09-08 笹原さん)。
+//   画面上のコンパスUIは方位を決める手段として残してあり、方位の値もデータに
+//   保存され続ける。また画像に出したくなったらこの定数を true に戻すだけでよい。
+const SHOW_COMPASS_ON_EXPORT = false;
 function drawCompassOnExport(octx, w, h, scale) {
   const r = 20 * scale, cx = w - r - 16 * scale, cy = r + 16 * scale;
   octx.save();
@@ -3584,7 +3597,7 @@ function buildExportCanvas(scale, transparent) {
   if (!transparent) { octx.fillStyle = "#ffffff"; octx.fillRect(0, 0, out.width, out.height); }
   drawBuildingOutline(octx, contentW * scale, contentH * scale, scale, pad);
   octx.drawImage(drawCanvas, pad, pad, contentW * scale, contentH * scale);
-  drawCompassOnExport(octx, out.width, out.height, scale);
+  if (SHOW_COMPASS_ON_EXPORT) drawCompassOnExport(octx, out.width, out.height, scale);
 
   // 表示状態を元に戻す
   view = savedView; W = savedW; H = savedH;
