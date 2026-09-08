@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-08-1">
+<meta name="app-version" content="2026-09-08-2">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -3965,6 +3965,17 @@ function openFloorIntoState(fd, modalId) {
   hideModal(modalId);
   view = { scale: 1, offX: 0, offY: 0 };
   drawGrid(); render(); updateCompassVisual(); saveLastOpen();
+  showFirstUseHintOnce();
+}
+
+// 使い方のヒントは、物件を開いて作図画面が実際に見えたときに一度だけ出す。
+// ログイン直後は物件一覧を開くようにしたため、そこで出しても一覧(z-index:50)の
+// 下に隠れて読まれないまま消えてしまう。
+let firstUseHintShown = false;
+function showFirstUseHintOnce() {
+  if (firstUseHintShown) return;
+  firstUseHintShown = true;
+  showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます", true);
 }
 
 $("btnProjects").addEventListener("click", () => {
@@ -4420,7 +4431,12 @@ whenCloudReady(() => {
     window.Cloud.migrateLocalDataIfNeeded(); // ユーザーの回答を待たず先に進める
     restoreLastOpen();
     render();
-    showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます", true);
+    // ログイン直後は物件一覧から始める。複数の物件を扱うので選ぶ画面が先にある方が
+    // 自然で、一覧が空になっていること(＝アカウントの取り違え)にもすぐ気づける。
+    // 前回開いていた物件はこの裏に復元済みなので、一覧を閉じればそのまま続きを描ける。
+    $("projectSearchInput").value = "";
+    renderProjectList();
+    showModal("projectsModal");
   });
 });
 </script>
