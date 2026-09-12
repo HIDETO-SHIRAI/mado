@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-12-4">
+<meta name="app-version" content="2026-09-12-5">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -335,7 +335,7 @@
     <div id="compass" title="ドラッグで方位を回転できます">
       <div id="compassRotor"><span class="arrow">▲</span><span>N</span></div>
     </div>
-    <div id="totals"><b id="totalTatami">0</b> 畳 ／ <span id="roomCount">0</span> 部屋</div>
+    <div id="totals"><b id="totalTatami">0</b> 畳 <span id="totalArea"></span>／ <span id="roomCount">0</span> 部屋</div>
     <div id="zoomHint">2本指でズーム/移動</div><!-- パソコンでは onReady で書き換える -->
     <div id="drawingBar">
       <button class="cancel" id="btnCancelDrawing">✕ やめる</button>
@@ -407,7 +407,9 @@
     <div class="field-row">
       <label id="tatamiSourceLabel">グリッドから自動計算</label>
       <div class="stepper">
-        <div class="val"><span id="tatamiValue">6.0</span><br><small>畳</small></div>
+        <button id="tatamiMinus" title="0.5畳ずつ減らす">−</button>
+        <div class="val"><span id="tatamiValue">6.0</span><br><small id="tatamiSub">畳</small></div>
+        <button id="tatamiPlus" title="0.5畳ずつ増やす">＋</button>
       </div>
     </div>
     <div class="field-row" id="stepCountRow" style="display:none;">
@@ -1229,6 +1231,15 @@ function polygonAreaMasu(points) {
 }
 function masuToTatami(masu) { return Math.round((masu / MASU_PER_TATAMI) * 100) / 100; }
 
+// 畳 → ㎡・坪。不動産公正競争規約の「1畳 = 1.62㎡以上」に合わせる。
+const SQM_PER_TATAMI = 1.62;
+const SQM_PER_TSUBO = 3.305785;
+function tatamiToSqm(tatami) { return tatami * SQM_PER_TATAMI; }
+function formatArea(tatami) {
+  const m2 = tatamiToSqm(tatami);
+  return `${(Math.round(m2 * 100) / 100).toFixed(2)}㎡ / ${(Math.round((m2 / SQM_PER_TSUBO) * 100) / 100).toFixed(2)}坪`;
+}
+
 // 多角形の真の重心(頂点の単純平均ではなく面積加重の重心)。退化(面積0)の場合は単純平均にフォールバック
 function polygonCentroidScreen(points) {
   const px = points.map((p) => gridToScreen(p.gx, p.gy));
@@ -1376,7 +1387,8 @@ function drawHatchFill(room) {
   pts.forEach((p, i) => { if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y); });
   dctx.closePath();
   dctx.clip();
-  dctx.strokeStyle = "rgba(90,80,50,0.28)";
+  // 白黒で保存するときに斜線だけ茶色く残っていた(色を落としたのに一箇所だけ色が出る)
+  dctx.strokeStyle = colorScheme === "simple" ? "rgba(60,60,60,0.26)" : "rgba(90,80,50,0.28)";
   dctx.lineWidth = 1;
   const spacing = 8;
   const span = (maxX - minX) + (maxY - minY);
@@ -2698,7 +2710,12 @@ function updateTotals() {
     const overlapsCountedRoom = countedRooms.some((r) => isPointInPolygonGrid(centroid.gx, centroid.gy, r.points));
     if (overlapsCountedRoom) total -= ex.tatami;
   });
-  $("totalTatami").textContent = Math.round(total * 2) / 2;
+  const 畳 = Math.round(total * 2) / 2;
+  $("totalTatami").textContent = 畳;
+  // マイソクには㎡と坪が要る(畳だけでは載せられない)。畳→㎡は不動産公正競争規約の
+  // 「1畳 = 1.62㎡以上」に合わせる。この図の1マスは910mm角なので2マス=1.6562㎡だが、
+  // 広告に載せる数字は規約どおりの1.62で出す(実際より大きく書かないため)。
+  $("totalArea").textContent = 畳 > 0 ? `(${formatArea(畳)}) ` : "";
   $("roomCount").textContent = countedRooms.length;
   $("projectTitle").textContent = `${state.projectName} - ${state.floorName}`;
 }
@@ -3530,10 +3547,27 @@ $("btnDeleteRoomInTypeModal").addEventListener("click", () => {
 // 表示用に丸めて末尾の余計な0を削る(6.00→6, 6.50→6.5, 6.25はそのまま)
 function formatTatami(v) { return String(Math.round(v * 100) / 100); }
 const DEFAULT_STEP_COUNT = 14; // 一般的な住宅の階段1層あたりの段数の目安
+// 畳数の下に㎡・坪を小さく添える。広さを直したときも一緒に動く。
+function updateTatamiSub(v) {
+  const el = $("tatamiSub");
+  if (el) el.textContent = `畳 (${formatArea(v)})`;
+}
+// 実測が図面と合わないことは現場では普通にある。グリッドから計算した値を
+// そのまま押しつけず、0.5畳ずつ直せるようにする(階段の段数と同じ操作)。
+function stepTatami(d) {
+  const cur = parseFloat($("tatamiModal").dataset.current) || 0;
+  const v = Math.max(0.5, Math.min(200, Math.round((cur + d) * 2) / 2));
+  $("tatamiModal").dataset.current = v;
+  $("tatamiValue").textContent = formatTatami(v);
+  updateTatamiSub(v);
+  $("tatamiSourceLabel").textContent = "手で直した広さ";
+}
+
 function openTatamiModal(type, tatami, sourceText, isEdit) {
   $("tatamiTitle").textContent = `${type.label} の広さ`;
   $("tatamiSourceLabel").textContent = sourceText;
   $("tatamiValue").textContent = formatTatami(tatami);
+  updateTatamiSub(tatami);
   showModal("tatamiModal");
   $("tatamiModal").dataset.current = tatami;
   $("btnDeleteRoomInModal").style.display = isEdit ? "block" : "none";
@@ -3567,6 +3601,8 @@ $("btnChangeRoomType").addEventListener("click", () => {
   hideModal("tatamiModal");
   openRoomTypeModal(true);
 });
+$("tatamiMinus").addEventListener("click", () => stepTatami(-0.5));
+$("tatamiPlus").addEventListener("click", () => stepTatami(0.5));
 $("stepCountMinus").addEventListener("click", () => stepStepCount(-1));
 $("stepCountPlus").addEventListener("click", () => stepStepCount(1));
 function stepStepCount(delta) {
