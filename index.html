@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-12-6">
+<meta name="app-version" content="2026-09-13-1">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -1537,6 +1537,24 @@ function isOnBuildingEdge(g) {
   const x = g.center.x - g.nx * d, y = g.center.y - g.ny * d;   // nx,nyは室内向き
   return !state.rooms.some((room) => pointInRoomScreen(room, x, y));
 }
+// 部屋の中で、室名を置ける「いちばん広いところ」を探す。
+// 水平に何本か走査して、部屋の内側にある区間のうち最も長いものの中心を返す。
+function 室名を置ける場所(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const ys = pts.map((p) => p.y);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (!(y1 > y0)) return null;
+  let best = null;
+  for (let i = 1; i < 24; i++) {
+    const y = y0 + ((y1 - y0) * i) / 24;
+    部屋の断面(pts, true, y).forEach((seg) => {
+      const w = seg[1] - seg[0];
+      if (!best || w > best.w) best = { w, x: (seg[0] + seg[1]) / 2, y };
+    });
+  }
+  return best;
+}
+
 function pointInRoomScreen(room, x, y) {
   const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   let inside = false;
@@ -1639,6 +1657,14 @@ function drawRoomDecor(room) {
       if (pointInRoomScreen(room, 候補.x, 候補.y)) { labelX = 候補.x; labelY = 候補.y; }
     }
   }
+  // 重心が部屋の外に出る形(細いL字・コの字)では、室名が部屋の外の白紙に浮く。
+  // 重心は面積の釣り合う点であって、部屋の中にあるとは限らない。
+  // 部屋の外なら、いちばん幅の広いところの中心へ逃がす。
+  if (!pointInRoomScreen(room, labelX, labelY)) {
+    const 場所 = 室名を置ける場所(room);
+    if (場所) { labelX = 場所.x; labelY = 場所.y; }
+  }
+
   const screenPts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const boxW = Math.max(...screenPts.map((p) => p.x)) - Math.min(...screenPts.map((p) => p.x));
   const boxH = Math.max(...screenPts.map((p) => p.y)) - Math.min(...screenPts.map((p) => p.y));
@@ -1678,7 +1704,7 @@ function drawRoomDecor(room) {
   } else {
     // 和室は畳が実際に敷いてあるので実寸だが、それ以外は畳に換算した目安なので
     // 「約」を付ける(2026-09-08 笹原さんの要望)。
-    const tatamiText = (type.key === "washitsu" ? "" : "約") + `${room.tatami}帖`;
+    const tatamiText = (type.key === "washitsu" ? "" : "約") + `${formatTatami(room.tatami)}帖`;
     result = fitLines(areaPx < 1600 ? tatamiText : `${type.label}\n${tatamiText}`, startSize);
     if (!result.fits && result.lines.length > 1) {
       result = fitLines(tatamiText, startSize);
@@ -1800,7 +1826,9 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
 // 階段の線の色。踏み板は細く薄く、上りの矢印はそれより少し濃く。
 // 以前は矢印だけ青(#2f6fed)で、描きかけの点線や選択中のハンドルと同じ色だった
 // ため、保存した画像でも「作業中の印が残っている」ように見えていた。
-const STAIR_TREAD_COLOR = "#8b96a3";
+// 踏み板は段数(=階高)を読む線なので、印刷やスマホの縮小で飛ばない濃さが要る。
+// #8b96a3 は階段の塗りに対し 2.65:1 で、非文字の下限3:1に届いていなかった。
+const STAIR_TREAD_COLOR = "#818c98";   // 階段の塗りで 3.02:1 / 白黒の塗りで 3.31:1
 const STAIR_ARROW_COLOR = "#3b4855";
 
 // 上りの矢印を、点の並び(折れ線)として描く。最後の点が上り切った側。
@@ -2051,7 +2079,7 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
     pts.forEach((p, i) => { if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y); });
     dctx.closePath();
     dctx.clip();
-    dctx.strokeStyle = "#5c6b78"; dctx.lineWidth = 1;
+    dctx.strokeStyle = STAIR_TREAD_COLOR; dctx.lineWidth = 1;
     for (let i = 1; i < 10; i++) {
       const x = minX + (w * i) / 10;
       dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
@@ -2143,7 +2171,7 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   pts.forEach((p, i) => { if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y); });
   dctx.closePath();
   dctx.clip();
-  dctx.strokeStyle = "#5c6b78"; dctx.lineWidth = 1;
+  dctx.strokeStyle = STAIR_TREAD_COLOR; dctx.lineWidth = 1;
   // band1: 踏み板は断面(band1Yの全幅)いっぱいに引き、長さ方向の位置はband1Lengthで並べる
   if (band1IsWide) {
     for (let i = 1; i < legTreads1; i++) {
@@ -2336,13 +2364,19 @@ function 設備を据える壁(room) {
   }
   if (壁.length === 0) return null;
   const size = FIXTURE_SIZE_MASU[room.typeKey];
-  const 入口 = (room.doors || []).map((d) => d.edge);
-  const 入口壁 = 壁.find((w) => w.i === 入口[0]);
+  // 「入口」は人が通る戸だけ。窓を入口として扱うと、窓の向かいに便器を据えてしまう。
+  const 戸か = (d) => !(d.type === "window_slide" || d.type === "window_fix");
+  const 入口 = (room.doors || []).filter(戸か).map((d) => d.edge);
+  const 窓 = (room.doors || []).filter((d) => !戸か(d)).map((d) => d.edge);
+  // 向かいの判定は**すべての入口**に対して見る。以前は doors[0] だけを基準に
+  // していたため、同じ建具の置き方でも登録した順番で設備の位置が変わっていた。
+  const 入口壁たち = 壁.filter((w) => 入口.includes(w.i));
   const 点数 = (w) => {
     let v = w.len;
     if (入口.includes(w.i)) v -= 1000;                           // 入口そのもの
+    if (窓.includes(w.i)) v -= 200;                              // 窓の下も避ける
     if (size && w.len < size.w * 1.05) v -= 500;                 // 幅が収まらない
-    if (入口壁 && (w.nx * 入口壁.nx + w.ny * 入口壁.ny) < -0.9) v += 300;  // 入口の向かい
+    if (入口壁たち.some((iw) => (w.nx * iw.nx + w.ny * iw.ny) < -0.9)) v += 300;  // 入口の向かい
     return v;
   };
   return 壁.slice().sort((a, b) => 点数(b) - 点数(a))[0];
@@ -2731,7 +2765,7 @@ function updateTotals() {
     const overlapsCountedRoom = countedRooms.some((r) => isPointInPolygonGrid(centroid.gx, centroid.gy, r.points));
     if (overlapsCountedRoom) total -= ex.tatami;
   });
-  const 畳 = Math.max(0, Math.round(total * 2) / 2);
+  const 畳 = Math.max(0, floorTatami(total));   // 部屋ごとの表示と同じく切り捨て
   $("totalTatami").textContent = 畳;
   // マイソクには㎡と坪が要る(畳だけでは載せられない)。
   // ★㎡は**丸める前の合計**から出す。0.5畳に丸めた値から換算すると、丸めの誤差が
@@ -3583,8 +3617,17 @@ $("btnDeleteRoomInTypeModal").addEventListener("click", () => {
 });
 
 /* ---------------- 畳数確認モーダル(新規/編集 共通) ---------------- */
-// 表示用に丸めて末尾の余計な0を削る(6.00→6, 6.50→6.5, 6.25はそのまま)
-function formatTatami(v) { return String(Math.round(v * 100) / 100); }
+// 広さの表示を 0.5帖 刻みに切り捨てる。
+//
+// ★「約5.84帖」のような2桁小数をそのまま出していた。1/4・1/8刻みで描けば
+//   必ずこうなるので、現地をなぞった図面はほぼ全部この表記になっていた。
+//   マイソクには載せられない。
+// ★四捨五入ではなく**切り捨て**。不動産公正競争規約は「1畳あたり1.62㎡以上」を
+//   求めており、切り上げると規約を割る。例えば実面積 9.67㎡(5.84帖相当)を
+//   「6帖」と書くと 9.67 ÷ 6 = 1.61㎡/帖 で規約違反になる。「5.5帖」なら
+//   9.67 ÷ 5.5 = 1.76㎡/帖 で満たす。小さく書く側へ倒す。
+function floorTatami(v) { return Math.floor((Number(v) || 0) * 2) / 2; }
+function formatTatami(v) { return String(floorTatami(v)); }
 const DEFAULT_STEP_COUNT = 14; // 一般的な住宅の階段1層あたりの段数の目安
 // 畳数の下に㎡・坪を小さく添える。広さを直したときも一緒に動く。
 function updateTatamiSub(v) {
@@ -3845,10 +3888,10 @@ function miniDoorPreviewSVG(key) {
   // 変え、2枚の障子が互い違いに重なって見える2枚の矩形パネルで表現する
   // (アイコンが小さいと本数の違いだけでは伝わりにくいと再調査で指摘されたため)。
   if (key === "slide_double") return `<svg ${common}><rect x="3" y="5" width="38" height="11" rx="2" fill="none" stroke="#1c2733" stroke-width="1.4"/><rect x="19" y="18" width="38" height="11" rx="2" fill="none" stroke="#1c2733" stroke-width="1.4"/></svg>`;
-  // 窓は色をドア系(#1c2733)と分け、盤面と同じ配色(#1565c0)にする
-  if (key === "window_slide") return `<svg ${common}><path d="M6 10 L54 10" stroke="#1565c0" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1565c0" stroke-width="1.3"/><path d="M30 10 L30 24" stroke="#1565c0" stroke-width="1.3"/></svg>`;
+  // 窓は色をドア系(#1c2733)と分け、盤面と同じ配色(#1c2733)にする
+  if (key === "window_slide") return `<svg ${common}><path d="M6 10 L54 10" stroke="#1c2733" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1c2733" stroke-width="1.3"/><path d="M30 10 L30 24" stroke="#1c2733" stroke-width="1.3"/></svg>`;
   // FIX窓: 中央の仕切りが無い代わりに両端を閉じ、1枚の固定窓であることを示す
-  return `<svg ${common}><path d="M6 10 L54 10" stroke="#1565c0" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1565c0" stroke-width="1.3"/><path d="M6 10 L6 24" stroke="#1565c0" stroke-width="1.3"/><path d="M54 10 L54 24" stroke="#1565c0" stroke-width="1.3"/></svg>`; // window_fix
+  return `<svg ${common}><path d="M6 10 L54 10" stroke="#1c2733" stroke-width="1.3"/><path d="M6 24 L54 24" stroke="#1c2733" stroke-width="1.3"/><path d="M6 10 L6 24" stroke="#1c2733" stroke-width="1.3"/><path d="M54 10 L54 24" stroke="#1c2733" stroke-width="1.3"/></svg>`; // window_fix
 }
 
 DOOR_TYPES.forEach((t) => {
