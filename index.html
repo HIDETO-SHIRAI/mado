@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-12-1">
+<meta name="app-version" content="2026-09-12-2">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -4502,6 +4502,29 @@ const VERSION_CHECK_KEY = "madori_last_version_check";
 function showAppVersion() {
   const el = $("appVersionLabel");
   if (el) el.textContent = "版 " + APP_VERSION;
+}
+
+// ---- 更新を自分で受け取れるようにする(Service Worker) ----
+// ★これが無いと、iOSのホーム画面アプリは古いHTMLを掴んだまま戻ってこない。
+//   置き場がGitHub Pagesで Cache-Control を変えられない(実測 max-age=600 固定)ため、
+//   更新のたびに `?v=3` のような新しいリンクを配って凌いでいた。
+//   sw.js が「画面は必ずネットワークを先に見る」ので、一度入れば
+//   **以後は新しいリンクを配らなくても勝手に新しくなる**。詳しくは sw.js の頭。
+//   入らなくてもアプリは今まで通り動く(古いブラウザ・file://等)。
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").then((reg) => {
+      // sw.js 自体が新しくなったときは、更新の知らせを出す(押すかは本人に任せる。
+      // 描いている最中に勝手に読み直すと、作業が飛んだように見えるため)。
+      reg.addEventListener("updatefound", () => {
+        const 新 = reg.installing;
+        if (!新) return;
+        新.addEventListener("statechange", () => {
+          if (新.state === "installed" && navigator.serviceWorker.controller) showUpdateBanner();
+        });
+      });
+    }).catch(() => { /* 登録できなくても動く */ });
+  });
 }
 function showUpdateBanner() {
   const b = $("updateBanner");
