@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-08-4">
+<meta name="app-version" content="2026-09-12-1">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -1298,9 +1298,15 @@ function isOutwardHingeDoor(d) {
 }
 
 /* ---------------- 描画 ---------------- */
+// ★書き出し(buildExportCanvas)も、この同じrenderを isExportRender=true で通る。
+//   だから「作業を助けるための印」は、ここで1つずつ外さないと画像に焼き込まれる。
+//   2026-09-12まで isExportRender は文字の大きさにしか使われておらず、
+//   **選択中の青い頂点ハンドル・描きかけの点線・他階の下敷きが、そのまま
+//   保存画像に入っていた**。☁️で「販売用資料」へ送る画像も同じものなので、
+//   お客様に出す資料に青い丸が並ぶ状態だった。画面では正常に見えるので気づけない。
 function render() {
   dctx.clearRect(0, 0, W, H);
-  drawOtherFloorsGhost();
+  if (!isExportRender) drawOtherFloorsGhost();   // 他階の下敷きは、なぞるための補助
   for (const room of state.rooms) drawRoomPolygon(room);
   // 外開きの開き戸は、部屋の外(隣室・屋外側)へ意図的にスイングするため、
   // どの部屋がクリップも無く最後に描く(そうしないと、後から描かれる別の
@@ -1311,9 +1317,11 @@ function render() {
     (room.doors || []).filter((d) => isOutwardHingeDoor(d)).forEach((d) => drawDoorMark(room, d));
     drawStairArrowIfNeeded(room);
   });
-  if (currentTool === "wall" && editingRoom) { drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom); }
+  // 選択中の青い頂点ハンドルと設備のつまみ。触るためのものなので書き出しでは描かない
+  if (!isExportRender && currentTool === "wall" && editingRoom) { drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom); }
 
-  if (drawingPoints.length > 0) {
+  // 描きかけの点線と点。まだ部屋になっていないので書き出しには入れない
+  if (!isExportRender && drawingPoints.length > 0) {
     dctx.beginPath();
     drawingPoints.forEach((p, i) => {
       const { x, y } = gridToScreen(p.gx, p.gy);
@@ -1382,7 +1390,9 @@ function fixtureScaleFactor(room) {
 
 function drawRoomPolygon(room) {
   const type = ROOM_TYPES.find((t) => t.key === room.typeKey) || ROOM_TYPES[ROOM_TYPES.length - 1];
-  const isEditing = editingRoom === room;
+  // 選択中の部屋は枠を太い黒で強調する。これも「触るための印」なので書き出しでは外す
+  // (ハンドルだけ消しても、この太枠が残って1部屋だけ黒縁になる。実際に画像で確認した)。
+  const isEditing = !isExportRender && editingRoom === room;
   dctx.beginPath();
   room.points.forEach((p, i) => {
     const { x, y } = gridToScreen(p.gx, p.gy);
@@ -4050,14 +4060,34 @@ function normalizeFloorData(raw) {
   }));
   return data;
 }
+// いま画面に出ている間取りが「実際に開いた物件のもの」かどうか。
+// 起動直後は、物件を開くまで false のまま(既定名「無題の物件」・部屋0の初期状態)。
+// ★これが無いと、空の初期画面がクラウドの中身を上書きする(下のautoSaveの注を参照)。
+let 物件を開いている = false;
+
 // オートセーブ: 部屋の追加・削除・編集・建具変更のたびに自動保存する。
 // ただし、まだ一度も保存されたことのない物件(=部屋を1つも描いていない
 // 初期状態)は保存しない。そうしないと「物件一覧を開いただけ」のような
 // 閲覧操作でも空の「無題の物件」が永続化されてしまい、一覧に消えない
 // ゴースト物件として残り続ける不具合になる。
+//
+// ★★2026-09-12、この条件で**データが消えていた**。
+//   もとは `if (!all[state.projectName] && state.rooms.length === 0) return;` で、
+//   「その名前がまだ無い」ときしか止めていなかった。ところが初期状態の物件名は
+//   **どの端末でも同じ「無題の物件」**なので、別の端末で中身を持っていると
+//   `all[名]` が存在して条件を抜け、**空の階でクラウドを上書きする**。
+//   しかもautoSaveが走るのは描いたときだけではない:
+//     ・「物件」ボタンを押して一覧を開く前($("btnProjects"))
+//     ・アプリを裏に回したとき(visibilitychange)
+//   実測: 端末Aで2部屋 → 別端末で物件ボタンを押しただけで 2部屋→0部屋。
+//   削除ではないのでゴミ箱にも入らず、戻す手段が無かった。
+//
+//   → 見るのは「名前があるか」ではなく「**この画面が本物の物件から来たか**」。
+//     物件を開いていない状態で、しかも部屋が0なら、書かずに帰る。
+//     物件を開いたあとに部屋を全部消した場合は、本人の意思なので今まで通り保存する。
 function autoSave() {
   const all = loadAllProjects();
-  if (!all[state.projectName] && state.rooms.length === 0) return;
+  if (state.rooms.length === 0 && !物件を開いている) return;
   saveCurrentFloorInto(all);
   saveAllProjects(all);
   saveLastOpen();
@@ -4119,6 +4149,7 @@ $("projectTitle").addEventListener("click", () => {
 // fdは{rooms, northAngle}の形。
 function openFloorIntoState(fd, modalId) {
   state.rooms = fd.rooms; state.northAngle = fd.northAngle;
+  物件を開いている = true;   // ここを通ったら、以後のautoSaveは本物の作業として扱ってよい
   history = []; future = []; updateUndoRedoButtons();
   hideModal(modalId);
   view = { scale: 1, offX: 0, offY: 0 };
@@ -4425,6 +4456,10 @@ function restoreLastOpen() {
     state.floorName = last.floor;
     const fd = normalizeFloorData(proj.floors[last.floor]);
     state.rooms = fd.rooms; state.northAngle = fd.northAngle;
+    物件を開いている = true;   // 前回の続きが復元できた＝本物の物件を開いている
+    // ★ここに来ないまま初期状態で残る経路がある。LAST_OPEN_KEY は端末ごとの
+    //   localStorage なので、**別の端末で初めて開いた日は必ず空振りする**。
+    //   そのとき画面は「無題の物件・部屋0」のままで、名前だけは他端末と一致する。
   } catch { /* 復元できなければ初期状態のまま */ }
 }
 window.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") autoSave(); });
@@ -4459,6 +4494,15 @@ function setCurrentAccountLabel(user) {
 // このHTMLに埋め込まれた版(headのmeta)。公開のたびに更新する。
 const APP_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || "?";
 const VERSION_CHECK_KEY = "madori_last_version_check";
+// いま自分が何版を見ているかを画面に出す。
+// ★2026-09-12まで、枠(#appVersionLabel)は置いてあるのに**値を入れるコードが
+//   1行も無く、ずっと空**だった。9月の「過去のデータが消えた」騒ぎは、スマホが
+//   7月末の古いHTMLを掴んでいたのが真因で、その再発防止として入れたはずの表示。
+//   空では「自分が古い版を見ている」ことを誰も確かめられない。
+function showAppVersion() {
+  const el = $("appVersionLabel");
+  if (el) el.textContent = "版 " + APP_VERSION;
+}
 function showUpdateBanner() {
   const b = $("updateBanner");
   if (b) b.style.display = "flex";
@@ -4587,6 +4631,11 @@ whenCloudReady(() => {
     if (!user) { hideAppUI(); return; }
     showAppUI();
     setCurrentAccountLabel(user);
+    // ★2026-09-12 に足した2行。checkForNewVersion() は定義してあるのに
+    //   **どこからも呼ばれておらず、版チェックは一度も動いていなかった**。
+    //   中で1日1回に間引き、通信できなければ黙って帰るので、待たずに投げてよい。
+    showAppVersion();
+    checkForNewVersion();
     resize();
     updateUndoRedoButtons();
     updateCompassVisual();
