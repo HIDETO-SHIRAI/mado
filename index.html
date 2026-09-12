@@ -1392,12 +1392,11 @@ function drawHatchFill(room) {
 }
 
 function fixtureScaleFactor(room) {
-  // トイレ・洗面台・キッチン等の設備アイコン専用の拡大縮小係数(0.55〜1.6)。
-  // 建具(ドア)は実寸(widthMasu)に紐づく絶対サイズで描画するため、この
-  // 部屋面積連動の縮小・拡大は設備アイコンにのみ適用する。
-  const areaPx = polygonScreenArea(room.points);
-  const refArea = (BASE_CELL * view.scale) * (BASE_CELL * view.scale) * 4; // 目安: 2x2マス
-  return Math.max(0.55, Math.min(1.6, Math.sqrt(areaPx / refArea)));
+  // 設備は建具(widthMasu)と同じく実寸で描く。1マス=910mm を基準にし、
+  // 部屋に収まらないときだけ縮める。
+  // ★以前は部屋の面積に連動して0.55〜1.6倍していたため、広い浴室ほど浴槽が
+  //   大きくなるといった、実物と関係のない絵になっていた。
+  return fixtureFitRatio(room);
 }
 
 // ---- 壁と開口部 ----------------------------------------------------------
@@ -1592,15 +1591,33 @@ function drawRoomDecor(room) {
   // 廊下など、室名も広さも表示する意味がない部屋種別はラベル描画自体を省略する
   if (type.noLabel) return;
 
-  const labelY = hasFixture ? c.y + (BASE_CELL * view.scale * fixtureScaleFactor(room)) * 0.3 : c.y;
+  // 設備は壁際に据えてあるので、室名はその反対側(部屋の奥)へ寄せる。
+  // 中心に置くと浴槽や便器の線と重なって読みにくかった。
+  let labelX = c.x, labelY = c.y;
+  if (room.typeKey === "kaidan") {
+    // 階段は上りの矢印が部屋の真ん中を通るので、室名を端へ寄せる。
+    // 中央に置くと必ず矢印と重なり、白い縁取りで矢印が途切れて見えていた。
+    const ys = room.points.map((p) => gridToScreen(p.gx, p.gy).y);
+    const 上端 = Math.min(...ys);
+    const 候補 = 上端 + Math.min(18, (Math.max(...ys) - 上端) * 0.12) + 8;
+    if (pointInRoomScreen(room, labelX, 候補)) labelY = 候補;
+  }
+  if (hasFixture) {
+    const wall = 設備を据える壁(room);
+    if (wall) {
+      const d = BASE_CELL * view.scale * 0.5;
+      const 候補 = { x: c.x + wall.nx * d, y: c.y + wall.ny * d };
+      if (pointInRoomScreen(room, 候補.x, 候補.y)) { labelX = 候補.x; labelY = 候補.y; }
+    }
+  }
   const screenPts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const boxW = Math.max(...screenPts.map((p) => p.x)) - Math.min(...screenPts.map((p) => p.x));
   const boxH = Math.max(...screenPts.map((p) => p.y)) - Math.min(...screenPts.map((p) => p.y));
   // L字等の凹型の部屋では、ラベルを描く実際の位置での部屋の実寸幅・高さは
   // 外接矩形より狭いことがある(欠けた角の分)。実寸の方が狭ければそちらを使い、
   // ラベルの文字が部屋の外(欠けた部分)へはみ出さないようにする。
-  const localW = polygonWidthAtY(screenPts, labelY, c.x);
-  const localH = polygonHeightAtX(screenPts, c.x, labelY);
+  const localW = polygonWidthAtY(screenPts, labelY, labelX);
+  const localH = polygonHeightAtX(screenPts, labelX, labelY);
   const maxAllowed = (localW > 0 ? Math.min(localW, boxW) : boxW) - 8;
   const maxAllowedH = (localH > 0 ? Math.min(localH, boxH) : boxH) - 8; // 極端に扁平(縦が狭い)な部屋でラベルが部屋境界にはみ出さないための高さ制約
 
@@ -1647,8 +1664,8 @@ function drawRoomDecor(room) {
   dctx.fillStyle = "#1c2733";
   result.lines.forEach((line, i) => {
     const ly = labelY + (i - (result.lines.length - 1) / 2) * (result.size + 3);
-    dctx.strokeText(line, c.x, ly);
-    dctx.fillText(line, c.x, ly);
+    dctx.strokeText(line, labelX, ly);
+    dctx.fillText(line, labelX, ly);
   });
 }
 
@@ -1662,7 +1679,8 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
   if (typeKey === "kitchen") {
     // キッチンカウンター: シンクゾーンとコンロゾーンを仕切り線で分け、
     // シンクには水栓、コンロは3口で描き、実際の設備配置に近づける
-    const w = unit * 0.92, h = unit * 0.36;
+    // システムキッチン 2550 × 650mm(I型)。壁一面に付く長いカウンター。
+    const w = unit * 2.55, h = unit * 0.71;
     dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
     const dividerX = cx - w / 2 + w * 0.42;
     dctx.beginPath();
@@ -1689,33 +1707,43 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     // 1マス=約90cm(半畳)を基準に、実際の洋式トイレの実寸比率
     // (タンク幅約42cm・奥行約16cm、便座部分は幅約38cm・奥行約43cm、
     // 合計奥行約64cm)に近づけて各部のサイズを調整している。
-    const tankW = unit * 0.47, tankH = unit * 0.18;
-    const tankY = cy - unit * 0.36;
+    const tankW = unit * 0.50, tankH = unit * 0.20;
+    const tankY = cy - unit * 0.385;
     dctx.strokeRect(cx - tankW / 2, tankY, tankW, tankH);
     dctx.beginPath();
     dctx.moveTo(cx + tankW / 2 - unit * 0.05, tankY + tankH * 0.3);
     dctx.lineTo(cx + tankW / 2 + unit * 0.05, tankY + tankH * 0.3);
     dctx.stroke();
-    const backW = unit * 0.42, backH = unit * 0.06;
+    const backW = unit * 0.44, backH = unit * 0.06;
     dctx.strokeRect(cx - backW / 2, tankY + tankH, backW, backH);
-    const bowlCy = tankY + tankH + backH + unit * 0.24;
+    const bowlCy = tankY + tankH + backH + unit * 0.245;
     dctx.beginPath();
-    dctx.ellipse(cx, bowlCy, unit * 0.21, unit * 0.24, 0, 0, Math.PI * 2);
+    dctx.ellipse(cx, bowlCy, unit * 0.19, unit * 0.245, 0, 0, Math.PI * 2);
     dctx.stroke();
     dctx.beginPath();
     dctx.moveTo(cx, bowlCy - unit * 0.24);
     dctx.lineTo(cx, bowlCy - unit * 0.08);
     dctx.stroke();
   } else if (typeKey === "yokushitsu") {
-    const w = unit * 0.8, h = unit * 0.5;
-    dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+    // 浴槽 1400 × 800mm。角を丸め、足元側に排水口を描く(実物の販売図面と同じ)。
+    const w = unit * 1.54, h = unit * 0.88;
+    const r = unit * 0.1;
     dctx.beginPath();
-    dctx.arc(cx + w * 0.32, cy, unit * 0.035, 0, Math.PI * 2);
+    if (dctx.roundRect) dctx.roundRect(cx - w / 2, cy - h / 2, w, h, r);
+    else dctx.rect(cx - w / 2, cy - h / 2, w, h);
+    dctx.stroke();
+    // 洗い場との境(エプロン)を1本
+    dctx.beginPath();
+    dctx.moveTo(cx - w / 2 + unit * 0.12, cy - h / 2 + unit * 0.09);
+    dctx.lineTo(cx + w / 2 - unit * 0.12, cy - h / 2 + unit * 0.09);
+    dctx.stroke();
+    dctx.beginPath();
+    dctx.arc(cx + w * 0.34, cy + h * 0.18, unit * 0.05, 0, Math.PI * 2);
     dctx.stroke();
   } else if (typeKey === "senmen") {
     // 洗面台: カウンター+ボウル+排水口+水栓+鏡(点線)を描き、
     // 単なる楕円だけでなく実際の洗面化粧台らしい見た目にする
-    const w = unit * 0.66, h = unit * 0.26;
+    const w = unit * 0.82, h = unit * 0.55;
     dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
     dctx.beginPath();
     dctx.ellipse(cx, cy, unit * 0.21, unit * 0.095, 0, 0, Math.PI * 2);
@@ -1742,6 +1770,38 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
 // 階段)の場合は、へこんでいる頂点(反射頂点)を折り返し地点とみなし、踏み板は
 // 矩形全体に格子状に敷いた上で部屋の形にクリップし、矢印は「片方の端→折り返し
 // 地点→もう片方の端」の2区間で曲げて描く。
+// 階段の線の色。踏み板は細く薄く、上りの矢印はそれより少し濃く。
+// 以前は矢印だけ青(#2f6fed)で、描きかけの点線や選択中のハンドルと同じ色だった
+// ため、保存した画像でも「作業中の印が残っている」ように見えていた。
+const STAIR_TREAD_COLOR = "#8b96a3";
+const STAIR_ARROW_COLOR = "#3b4855";
+
+// 上りの矢印を、点の並び(折れ線)として描く。最後の点が上り切った側。
+// 端は壁から margin だけ内側に置く。壁の上に乗せると線が壁と重なって
+// 「突き抜けている」ように見える(L字の実機画像で確認)。
+function drawStairArrowPath(points) {
+  if (points.length < 2) return;
+  dctx.save();
+  dctx.strokeStyle = STAIR_ARROW_COLOR;
+  dctx.lineWidth = 1.8;
+  dctx.lineJoin = "round"; dctx.lineCap = "round";
+  dctx.beginPath();
+  points.forEach((p, i) => { if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y); });
+  dctx.stroke();
+  const end = points[points.length - 1], prev = points[points.length - 2];
+  const dx = end.x - prev.x, dy = end.y - prev.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len, uy = dy / len;
+  const headLen = Math.min(11, len * 0.4);
+  dctx.beginPath();
+  dctx.moveTo(end.x, end.y);
+  dctx.lineTo(end.x - ux * headLen - uy * headLen * 0.5, end.y - uy * headLen + ux * headLen * 0.5);
+  dctx.moveTo(end.x, end.y);
+  dctx.lineTo(end.x - ux * headLen + uy * headLen * 0.5, end.y - uy * headLen - ux * headLen * 0.5);
+  dctx.stroke();
+  dctx.restore();
+}
+
 function drawStairSymbol(room) {
   const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
@@ -1789,37 +1849,34 @@ function drawStairSymbol(room) {
   const vertical = axisSwapped ? !(h >= w) : (h >= w);
   const treadCount = stepCount;
   dctx.save();
-  dctx.strokeStyle = "#5c6b78"; dctx.lineWidth = 1;
+  dctx.strokeStyle = STAIR_TREAD_COLOR; dctx.lineWidth = 1;
+  // 踏み板の区切り線。N段の階段は踏み面がN枚なので、内側の線はN-1本になる。
+  // 線は壁いっぱいには引かず、両端を少し空ける(実物の図面もそう描いてある)。
   if (vertical) {
     for (let i = 1; i < treadCount; i++) {
       const y = minY + (h * i) / treadCount;
-      dctx.beginPath(); dctx.moveTo(minX + w * 0.15, y); dctx.lineTo(maxX - w * 0.15, y); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(minX + w * 0.12, y); dctx.lineTo(maxX - w * 0.12, y); dctx.stroke();
     }
-    const ax = minX + w / 2;
-    const tailY = reversed ? minY + h * 0.1 : maxY - h * 0.1;
-    const headY = reversed ? maxY - h * 0.1 : minY + h * 0.1;
-    const tickSign = Math.sign(tailY - headY) || 1;
-    dctx.beginPath(); dctx.moveTo(ax, tailY); dctx.lineTo(ax, headY); dctx.stroke();
-    dctx.beginPath();
-    dctx.moveTo(ax, headY); dctx.lineTo(ax - w * 0.06, headY + h * 0.08 * tickSign);
-    dctx.moveTo(ax, headY); dctx.lineTo(ax + w * 0.06, headY + h * 0.08 * tickSign);
-    dctx.stroke();
   } else {
     for (let i = 1; i < treadCount; i++) {
       const x = minX + (w * i) / treadCount;
-      dctx.beginPath(); dctx.moveTo(x, minY + h * 0.15); dctx.lineTo(x, maxY - h * 0.15); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(x, minY + h * 0.12); dctx.lineTo(x, maxY - h * 0.12); dctx.stroke();
     }
-    const ay = minY + h / 2;
-    const tailX = reversed ? minX + w * 0.1 : maxX - w * 0.1;
-    const headX = reversed ? maxX - w * 0.1 : minX + w * 0.1;
-    const tickSign = Math.sign(tailX - headX) || 1;
-    dctx.beginPath(); dctx.moveTo(tailX, ay); dctx.lineTo(headX, ay); dctx.stroke();
-    dctx.beginPath();
-    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay - h * 0.06);
-    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay + h * 0.06);
-    dctx.stroke();
   }
   dctx.restore();
+  if (vertical) {
+    const ax = minX + w / 2;
+    drawStairArrowPath([
+      { x: ax, y: reversed ? minY + h * 0.12 : maxY - h * 0.12 },
+      { x: ax, y: reversed ? maxY - h * 0.12 : minY + h * 0.12 },
+    ]);
+  } else {
+    const ay = minY + h / 2;
+    drawStairArrowPath([
+      { x: reversed ? minX + w * 0.12 : maxX - w * 0.12, y: ay },
+      { x: reversed ? maxX - w * 0.12 : minX + w * 0.12, y: ay },
+    ]);
+  }
 }
 
 // コの字・Z字等、反射頂点が2つ以上(または0)ある複雑な形の階段用フォールバック。
@@ -1835,7 +1892,7 @@ function drawGenericStairTreads(pts, minX, maxX, minY, maxY, stepCount, axisSwap
   pts.forEach((p, i) => { if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y); });
   dctx.closePath();
   dctx.clip();
-  dctx.strokeStyle = "#5c6b78"; dctx.lineWidth = 1;
+  dctx.strokeStyle = STAIR_TREAD_COLOR; dctx.lineWidth = 1;
   if (vertical) {
     for (let i = 1; i < treadCount; i++) {
       const y = minY + (h * i) / treadCount;
@@ -1850,38 +1907,82 @@ function drawGenericStairTreads(pts, minX, maxX, minY, maxY, stepCount, axisSwap
   dctx.restore();
 }
 
-// 上記フォールバックの矢印: 長辺方向の直線1本の簡易近似(実際の折れ方までは
-// 表現しないが、視覚的な破綻は避けられる)。U字等では部屋の凹み(輪郭の外)を
-// 通ることがあるため、部屋自身のクリップの外(render()の後段、外開き建具と
-// 同じタイミング)で描く必要がある。そのためdrawGenericStairTreadsとは別関数にし、
-// drawStairArrowIfNeeded()から呼ぶ。
-function drawGenericStairArrow(minX, maxX, minY, maxY, axisSwapped, reversed) {
+// 走査線が部屋の内側を通る区間を返す。横向き=true なら y=pos の水平線と交わる
+// x の並び、false なら x=pos の垂直線と交わる y の並び。
+// U字の中ほどでは区間が2つ(左右の脚)に分かれ、折り返しの所では1つに戻る。
+function 部屋の断面(pts, 横向き, pos) {
+  const vs = [];
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[j], b = pts[i];
+    const a1 = 横向き ? a.y : a.x, b1 = 横向き ? b.y : b.x;
+    const a2 = 横向き ? a.x : a.y, b2 = 横向き ? b.x : b.y;
+    if ((a1 > pos) !== (b1 > pos)) vs.push(a2 + ((pos - a1) / (b1 - a1)) * (b2 - a2));
+  }
+  vs.sort((p, q) => p - q);
+  const segs = [];
+  for (let i = 0; i + 1 < vs.length; i += 2) {
+    if (vs[i + 1] - vs[i] > 1) segs.push([vs[i], vs[i + 1]]);
+  }
+  return segs;
+}
+
+// コの字・U字等の矢印。歩く向きに沿って部屋を刻み、その位置で部屋の内側にある
+// 区間を調べて経路を作る。区間が2つに分かれている所は「行き」と「帰り」の2本の
+// 脚なので、1つに戻る所(折り返し)で繋ぐ。
+//
+// ★以前は長辺方向の直線1本で近似しており、U字の中央の空洞をまっすぐ突き抜けて
+//   いた(不具合の証拠_2026-09-12/04)。部屋のクリップの外で描いているため、
+//   輪郭の外を通っても消えずにそのまま見えてしまう。
+// 部屋自身のクリップの外(render()の後段、外開き建具と同じタイミング)で描く必要が
+// あるので、drawGenericStairTreadsとは別関数にし、drawStairArrowIfNeeded()から呼ぶ。
+function drawGenericStairArrow(pts, minX, maxX, minY, maxY, axisSwapped, reversed) {
   const w = maxX - minX, h = maxY - minY;
   const vertical = axisSwapped ? !(h >= w) : (h >= w);
-  dctx.save();
-  dctx.strokeStyle = "#2f6fed"; dctx.lineWidth = 2.4;
-  if (vertical) {
-    const ax = minX + w / 2;
-    const tailY = reversed ? minY + h * 0.1 : maxY - h * 0.1;
-    const headY = reversed ? maxY - h * 0.1 : minY + h * 0.1;
-    const tickSign = Math.sign(tailY - headY) || 1;
-    dctx.beginPath(); dctx.moveTo(ax, tailY); dctx.lineTo(ax, headY); dctx.stroke();
-    dctx.beginPath();
-    dctx.moveTo(ax, headY); dctx.lineTo(ax - w * 0.06, headY + h * 0.08 * tickSign);
-    dctx.moveTo(ax, headY); dctx.lineTo(ax + w * 0.06, headY + h * 0.08 * tickSign);
-    dctx.stroke();
-  } else {
-    const ay = minY + h / 2;
-    const tailX = reversed ? minX + w * 0.1 : maxX - w * 0.1;
-    const headX = reversed ? maxX - w * 0.1 : minX + w * 0.1;
-    const tickSign = Math.sign(tailX - headX) || 1;
-    dctx.beginPath(); dctx.moveTo(tailX, ay); dctx.lineTo(headX, ay); dctx.stroke();
-    dctx.beginPath();
-    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay - h * 0.06);
-    dctx.moveTo(headX, ay); dctx.lineTo(headX + w * 0.08 * tickSign, ay + h * 0.06);
-    dctx.stroke();
+  // vertical: 上下に歩く = 水平の走査線で刻む
+  const 端0 = vertical ? minY : minX, 端1 = vertical ? maxY : maxX;
+  const N = 40;
+  const 刻み = [];
+  for (let i = 1; i < N; i++) {
+    const pos = 端0 + ((端1 - 端0) * i) / N;
+    刻み.push({ pos, segs: 部屋の断面(pts, vertical, pos) });
   }
-  dctx.restore();
+  const 点 = (pos, v) => (vertical ? { x: v, y: pos } : { x: pos, y: v });
+  const 中心 = (seg) => (seg[0] + seg[1]) / 2;
+
+  const 二本 = 刻み.filter((d) => d.segs.length >= 2);
+  const 一本 = 刻み.filter((d) => d.segs.length === 1);
+  if (二本.length < 2 || 一本.length < 2) {
+    // 分かれていない(=ただの長方形に近い形)。中心を通る直線1本でよい
+    const 中 = 刻み.length ? 中心(刻み[Math.floor(刻み.length / 2)].segs[0] || [端0, 端1]) : 0;
+    const m = (端1 - 端0) * 0.1;
+    drawStairArrowPath([
+      点(reversed ? 端0 + m : 端1 - m, 中),
+      点(reversed ? 端1 - m : 端0 + m, 中),
+    ]);
+    return;
+  }
+
+  // 折り返し(1本になっている側)が、刻みの手前側にあるか奥側にあるか
+  const 折返しが手前 = 一本[0].pos < 二本[0].pos;
+  const 二本の外端 = 折返しが手前 ? 二本[二本.length - 1] : 二本[0];
+  const 二本の内端 = 折返しが手前 ? 二本[0] : 二本[二本.length - 1];
+  const 折返し = 折返しが手前 ? 一本[0] : 一本[一本.length - 1];
+
+  const 左 = (d) => 中心(d.segs[0]);
+  const 右 = (d) => 中心(d.segs[d.segs.length - 1]);
+  // 折り返しは、脚の中心をそのまま奥まで伸ばして上で横に繋ぐ(コの字に回す)。
+  // 折返し地点の断面の中心1点だけを経由すると、両脚から斜めに寄る三角形になり、
+  // 階段の折り返しに見えなかった。
+  const 奥 = 折返しが手前 ? 一本[Math.min(2, 一本.length - 1)] : 一本[Math.max(0, 一本.length - 3)];
+  const 経路 = [
+    点(二本の外端.pos, 左(二本の外端)),
+    点(二本の内端.pos, 左(二本の内端)),
+    点(奥.pos, 左(二本の内端)),
+    点(奥.pos, 右(二本の内端)),
+    点(二本の内端.pos, 右(二本の内端)),
+    点(二本の外端.pos, 右(二本の外端)),
+  ];
+  drawStairArrowPath(reversed ? 経路.slice().reverse() : 経路);
 }
 
 // U字・コの字等(反射頂点2つ以上、または0)の階段だけ、矢印を部屋のクリップの
@@ -1901,7 +2002,7 @@ function drawStairArrowIfNeeded(room) {
   const rotation = room.stairRotation != null ? room.stairRotation : (room.stairFlip ? 180 : 0);
   const axisSwapped = rotation === 90 || rotation === 270;
   const reversed = rotation === 180 || rotation === 270;
-  drawGenericStairArrow(minX, maxX, minY, maxY, axisSwapped, reversed);
+  drawGenericStairArrow(pts, minX, maxX, minY, maxY, axisSwapped, reversed);
 }
 
 // L字・コの字等の折れ階段用: 反射頂点(部屋の外接矩形の内側に食い込んでいる頂点)を
@@ -2004,9 +2105,9 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
     : shrinkLengthNearReflex(band2X, reflex.x);
 
   // 段数(stepCount)を、各区間の実際の歩く向きの長さの比で振り分ける。
-  // 曲がり角の扇形踏み板におよそ1段分を割り当ててから、残りを長さ比で配分する。
-  const fanSteps = Math.min(3, Math.max(1, Math.round(stepCount * 0.15)));
-  const straightSteps = Math.max(2, stepCount - fanSteps);
+  // 折れ部の踊り場に何段ぶんかを先に取り置いてから、残りを長さ比で配分する。
+  const landingSteps = Math.min(3, Math.max(1, Math.round(stepCount * 0.15)));
+  const straightSteps = Math.max(2, stepCount - landingSteps);
   const totalLen = travelLen1 + travelLen2 || 1;
   const legTreads1 = Math.max(1, Math.round(straightSteps * (travelLen1 / totalLen)));
   const legTreads2 = Math.max(1, straightSteps - legTreads1);
@@ -2040,28 +2141,30 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
       dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
     }
   }
-  // 回り階段の扇形踏み板: 反射頂点(内側の角)を要に、片方の脚の向きから他方の脚の
-  // 向きまで角度を振って放射線を引く。各線の先端は、直線内挿ではなく実際に
-  // その角度の光線が外周の壁(反射頂点の対角にあるコーナーで直角に交わる2枚の壁)の
-  // どちらと交わるかを計算して置くことで、すべての線の端が確実に枠(壁)に接するようにする。
-  const fanOuterCorner = {
-    x: missing.x === maxX ? minX : maxX,
-    y: missing.y === maxY ? minY : maxY,
-  };
-  const fanN = fanSteps + 1;
-  for (let i = 0; i <= fanN; i++) {
-    const t = (i / fanN) * (Math.PI / 2);
-    const dx = dir1.x * Math.cos(t) + dir2.x * Math.sin(t);
-    const dy = dir1.y * Math.cos(t) + dir2.y * Math.sin(t);
-    const tX = dx !== 0 ? (fanOuterCorner.x - reflex.x) / dx : Infinity;
-    const tY = dy !== 0 ? (fanOuterCorner.y - reflex.y) / dy : Infinity;
-    const tHit = Math.min(tX > 0 ? tX : Infinity, tY > 0 ? tY : Infinity);
-    const ex = reflex.x + dx * tHit;
-    const ey = reflex.y + dy * tHit;
-    dctx.beginPath();
-    dctx.moveTo(reflex.x, reflex.y);
-    dctx.lineTo(ex, ey);
-    dctx.stroke();
+  // 折れ部は「踊り場」として空けておき、その境界に線を1本ずつ引く。
+  //
+  // ★以前はここで回り階段(winder)の扇形を描いていたが、放射線の先を
+  //   「反射頂点の対角の隅」に置いていたため、線が通路の幅を大きく超えて
+  //   部屋を斜めに横切っていた。実機で4向きとも同じ斜め線2本が出ていたのは
+  //   これが原因(不具合の証拠_2026-09-12/03)。扇形を正しく描くには回り段の
+  //   幅と中心を別に持つ必要があり、いまのデータ(外接矩形と反射頂点だけ)では
+  //   決められない。実物の販売図面にも踊り場で折れる階段は普通にあるので、
+  //   破綻しない踊り場の描き方に改めた。
+  const 踊り場の境 = (range, pivot) =>
+    (Math.abs(range[0] - pivot) <= Math.abs(range[1] - pivot) ? range[0] : range[1]);
+  if (band1IsWide) {
+    const x = 踊り場の境(band1Length, reflex.x);
+    dctx.beginPath(); dctx.moveTo(x, band1Y[0]); dctx.lineTo(x, band1Y[1]); dctx.stroke();
+  } else {
+    const y = 踊り場の境(band1Length, reflex.y);
+    dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); dctx.stroke();
+  }
+  if (band2IsTall) {
+    const y = 踊り場の境(band2Length, reflex.y);
+    dctx.beginPath(); dctx.moveTo(band2X[0], y); dctx.lineTo(band2X[1], y); dctx.stroke();
+  } else {
+    const x = 踊り場の境(band2Length, reflex.x);
+    dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
   }
   dctx.restore();
 
@@ -2080,27 +2183,18 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   // 「🔄」ボタンでの反転指定(180°/270°)に応じて矢印の先端(=上りの終点)側を
   // 入れ替える。L字は両脚の向きが既に形で決まっているため、90°の軸入れ替えは
   // 意味を持たず、ここでは反転の有無(reversed)だけを見る。
-  const end = reversed ? legA : legB;
-
-  dctx.save();
-  dctx.strokeStyle = "#2f6fed"; dctx.lineWidth = 2.4;
-  dctx.beginPath();
-  dctx.moveTo(legA.x, legA.y);
-  dctx.lineTo(bend.x, bend.y);
-  dctx.lineTo(legB.x, legB.y);
-  dctx.stroke();
-  // 矢印の先端(end側=上りの終点)
-  const dx = end.x - bend.x, dy = end.y - bend.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len, uy = dy / len;
-  const headLen = Math.min(12, len * 0.4);
-  dctx.beginPath();
-  dctx.moveTo(end.x, end.y);
-  dctx.lineTo(end.x - ux * headLen - uy * headLen * 0.5, end.y - uy * headLen + ux * headLen * 0.5);
-  dctx.moveTo(end.x, end.y);
-  dctx.lineTo(end.x - ux * headLen + uy * headLen * 0.5, end.y - uy * headLen - ux * headLen * 0.5);
-  dctx.stroke();
-  dctx.restore();
+  // 両端は壁から少し内側に引っ込める。壁の上に端を置くと、線が壁と重なって
+  // 「矢印が壁を突き抜けている」ように見えていた(実機画像で確認)。
+  const margin = Math.min(maxX - minX, maxY - minY) * 0.14;
+  const 内側へ = (p, 起点) => {
+    const dx = p.x - 起点.x, dy = p.y - 起点.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const k = Math.max(0, len - margin) / len;
+    return { x: 起点.x + dx * k, y: 起点.y + dy * k };
+  };
+  const A = 内側へ(legA, bend), B = 内側へ(legB, bend);
+  // 上り始めと上り切りは形だけでは決まらないので、モーダルの「🔄」で入れ替える。
+  drawStairArrowPath(reversed ? [B, bend, A] : [A, bend, B]);
 }
 
 // 「編集/消す」ツールで選択中の部屋の頂点にハンドル(丸印)を表示する。
@@ -2159,9 +2253,20 @@ function isPointInPolygonGrid(gx, gy, points) {
 // L字等の凹型の部屋では、重心(や単純平均)が欠けた角(部屋の外)に来ることが
 // あるため、実際に部屋の内側にあるか確認し、外なら順にフォールバックする。
 function defaultFixtureGridPos(room) {
+  // 設備は壁に接して据え付けるものなので、据える壁の中央から室内へ
+  // 「奥行きの半分」だけ入った所を既定にする(指でドラッグすれば好きな場所へ
+  // 動かせるのは今までどおり)。以前は部屋の重心の少し上に浮かせていた。
+  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const wall = 設備を据える壁(room);
+  if (size && wall) {
+    const k = fixtureFitRatio(room);
+    const p = {
+      gx: wall.mid.gx + wall.nx * (size.d * k) / 2,
+      gy: wall.mid.gy + wall.ny * (size.d * k) / 2,
+    };
+    if (isPointInPolygonGrid(p.gx, p.gy, room.points)) return p;
+  }
   const centroid = polygonCentroidGrid(room.points);
-  const nudged = { gx: centroid.gx, gy: centroid.gy - 0.3 };
-  if (isPointInPolygonGrid(nudged.gx, nudged.gy, room.points)) return nudged;
   if (isPointInPolygonGrid(centroid.gx, centroid.gy, room.points)) return centroid;
   let gx = 0, gy = 0;
   room.points.forEach((p) => { gx += p.gx; gy += p.gy; });
@@ -2171,17 +2276,77 @@ function defaultFixtureGridPos(room) {
   return { gx: room.points[0].gx, gy: room.points[0].gy };
 }
 function fixtureGridPos(room) { return room.fixturePos || defaultFixtureGridPos(room); }
+
+// 設備の実寸(幅 × 奥行き。1マス = 910mm)。
+// 部屋の面積から適当に伸び縮みさせていた頃は、4畳の浴室に小さな浴槽が真ん中に
+// 浮くような絵になっていた。実物は壁に接して据え付けるもので、大きさも決まっている。
+const FIXTURE_SIZE_MASU = {
+  yokushitsu: { w: 1.54, d: 0.88 },   // 浴槽 1400 × 800mm
+  wc:         { w: 0.50, d: 0.77 },   // 洋式便器 455 × 700mm(タンク込み)
+  senmen:     { w: 0.82, d: 0.55 },   // 洗面化粧台 750 × 500mm
+  kitchen:    { w: 2.55, d: 0.71 },   // システムキッチン 2550 × 650mm
+};
+
+// 設備を据える壁を選ぶ。
+//   ・戸のある壁は入口なので据えない。その**向かい**の壁をいちばん優先する
+//     (トイレの便器は入口の正面に付く。長い壁を機械的に選ぶと横を向いてしまう)
+//   ・設備の幅が収まらない壁は避ける(キッチンのカウンターは長い壁にしか付かない)
+//   ・あとは長い壁ほど良い
+function 設備を据える壁(room) {
+  const pts = room.points;
+  const s = roomWindingSign(room);
+  const 壁 = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const len = Math.hypot(b.gx - a.gx, b.gy - a.gy);
+    if (len <= 0) continue;
+    const ux = (b.gx - a.gx) / len, uy = (b.gy - a.gy) / len;
+    壁.push({
+      i, len, ux, uy,
+      nx: -uy * s, ny: ux * s,                                   // 室内へ向く法線
+      mid: { gx: (a.gx + b.gx) / 2, gy: (a.gy + b.gy) / 2 },
+    });
+  }
+  if (壁.length === 0) return null;
+  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const 入口 = (room.doors || []).map((d) => d.edge);
+  const 入口壁 = 壁.find((w) => w.i === 入口[0]);
+  const 点数 = (w) => {
+    let v = w.len;
+    if (入口.includes(w.i)) v -= 1000;                           // 入口そのもの
+    if (size && w.len < size.w * 1.05) v -= 500;                 // 幅が収まらない
+    if (入口壁 && (w.nx * 入口壁.nx + w.ny * 入口壁.ny) < -0.9) v += 300;  // 入口の向かい
+    return v;
+  };
+  return 壁.slice().sort((a, b) => 点数(b) - 点数(a))[0];
+}
+
+// 部屋に収まるように縮める係数。壁より広い設備、奥行きの足りない部屋に備える。
+function fixtureFitRatio(room) {
+  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const wall = 設備を据える壁(room);
+  if (!size || !wall) return 1;
+  const xs = room.points.map((p) => p.gx), ys = room.points.map((p) => p.gy);
+  const 短辺 = Math.min(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  return Math.max(0.35, Math.min(1, (wall.len * 0.92) / size.w, (短辺 * 0.92) / size.d));
+}
 // ★設備の簡易線画は「このレベルならいらない」という指摘を受けて止めている
 //   (2026-09-08 笹原さん)。描く仕組みは丸ごと残してあるので、また出したく
 //   なったらこの定数を true に戻すだけでよい。位置・回転のハンドルもこの判定の
 //   先にあるので、まとめて出なくなる。
-const SHOW_ROOM_FIXTURES = false;
+const SHOW_ROOM_FIXTURES = true;
 function roomHasFixture(room) {
   if (!SHOW_ROOM_FIXTURES) return false;
   return FIXTURE_ROOM_KEYS.includes(room.typeKey) && polygonScreenArea(room.points) >= 900;
 }
 // 設備アイコンの向き(度数、0=初期の正立方向)。位置と同様にドラッグで変えられる。
-function fixtureRotation(room) { return room.fixtureRotation || 0; }
+function fixtureRotation(room) {
+  if (room.fixtureRotation != null) return room.fixtureRotation;
+  // 設備の絵は「上が壁側」で描いてあるので、その上端が据える壁を向くよう回す。
+  const wall = 設備を据える壁(room);
+  if (!wall) return 0;
+  return (Math.atan2(-wall.nx, wall.ny) * 180) / Math.PI;
+}
 const FIXTURE_ROTATE_HANDLE_R_PX = 34; // 位置ハンドルの中心から、回転ハンドルまでの距離
 function fixtureRotateHandlePos(room) {
   const { x, y } = gridToScreen(fixtureGridPos(room).gx, fixtureGridPos(room).gy);
@@ -3384,8 +3549,18 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
     $("tatamiModal").dataset.stepCount = existing;
     $("stepCountValue").textContent = existing;
     const src = (isEdit && editingRoom) || pendingRoom || {};
+    // ラベル(どちらへ上るか)の計算に部屋の形が要るので、ここで控えておく
+    const 形 = src.points || [];
+    const xs = 形.map((p) => p.gx), ys = 形.map((p) => p.gy);
+    $("tatamiModal").dataset.stairBent = 折れ階段の形か(形) ? "1" : "0";
+    $("tatamiModal").dataset.stairTall =
+      (形.length && (Math.max(...ys) - Math.min(...ys)) >= (Math.max(...xs) - Math.min(...xs))) ? "1" : "0";
     // 旧仕様(stairFlip: 反転のみの2方向)のデータは180°として引き継ぐ
-    const existingRotation = src.stairRotation != null ? src.stairRotation : (src.stairFlip ? 180 : 0);
+    let existingRotation = src.stairRotation != null ? src.stairRotation : (src.stairFlip ? 180 : 0);
+    // L字に作り替えた部屋に90°/270°が残っていると、ボタンの表示と絵が食い違う
+    if ($("tatamiModal").dataset.stairBent === "1" && (existingRotation === 90 || existingRotation === 270)) {
+      existingRotation = existingRotation === 90 ? 0 : 180;
+    }
     $("tatamiModal").dataset.stairRotation = existingRotation;
     $("btnRotateStairDir").textContent = stairRotationLabel(existingRotation);
   }
@@ -3405,13 +3580,37 @@ function stepStepCount(delta) {
 // 実際にどちら向きに上るか・どちらの軸にするかは形だけでは決まらない場面がある
 // (特に正方形に近い部屋)ため、建具の内開き/外開きと同様に明示的なボタンで
 // 0°→90°→180°→270°と回転させ、4方向すべてに対応できるようにする。
+// 部屋の形が「反射頂点1つのL字(折れ階段)」かどうか。グリッド座標で見る。
+function 折れ階段の形か(pts) {
+  if (!pts || pts.length <= 4) return false;
+  const xs = pts.map((p) => p.gx), ys = pts.map((p) => p.gy);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const eps = 0.01;
+  return pts.filter((p) =>
+    p.gx > minX + eps && p.gx < maxX - eps && p.gy > minY + eps && p.gy < maxY - eps
+  ).length === 1;
+}
+
+// 「🔄 90°」と角度で出しても、どちらへ上るのかが分からないという指摘を受け、
+// 実際に矢印が向く方向を記号で出すようにした。
+// L字の折れ階段は両脚の向きが形で決まっており、選べるのは「どちらから上るか」の
+// 2通りしかない。それを4回押させていたため、2回押しても絵が変わらず「壊れている」
+// ように見えていた(実機画像で4向きのうち2組が同一だった)。L字は0°と180°だけを行き来する。
 function stairRotationLabel(rotation) {
-  return rotation === 0 ? "🔄 基準" : `🔄 ${rotation}°`;
+  const d = $("tatamiModal").dataset;
+  if (d.stairBent === "1") return rotation === 0 ? "🔄 上り向き ①" : "🔄 上り向き ②";
+  const axisSwapped = rotation === 90 || rotation === 270;
+  const reversed = rotation === 180 || rotation === 270;
+  const vertical = axisSwapped ? !(d.stairTall === "1") : (d.stairTall === "1");
+  const 記号 = vertical ? (reversed ? "↓" : "↑") : (reversed ? "→" : "←");
+  return `🔄 上る向き ${記号}`;
 }
 $("btnRotateStairDir").addEventListener("click", () => {
-  const cur = parseInt($("tatamiModal").dataset.stairRotation, 10) || 0;
-  const next = (cur + 90) % 360;
-  $("tatamiModal").dataset.stairRotation = next;
+  const d = $("tatamiModal").dataset;
+  const cur = parseInt(d.stairRotation, 10) || 0;
+  const next = d.stairBent === "1" ? (cur === 0 ? 180 : 0) : (cur + 90) % 360;
+  d.stairRotation = next;
   $("btnRotateStairDir").textContent = stairRotationLabel(next);
 });
 function confirmTatami() {
