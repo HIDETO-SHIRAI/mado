@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-12-5">
+<meta name="app-version" content="2026-09-12-6">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -116,6 +116,12 @@
     backdrop-filter: blur(2px);
   }
   #drawingBar.show { display: flex; }
+  /* 狭い画面では、左下の「◯畳(◯㎡/◯坪) ／ ◯部屋」が右下の案内にかぶる。
+     ㎡・坪を足して幅が2倍になったため(320pxで実測26pxかぶった)。2行にして逃がす。 */
+  @media (max-width: 380px) {
+    #totals { max-width: 46vw; line-height: 1.35; }
+    #totals #totalArea { display: block; }
+  }
   #drawingBar button {
     border: none; border-radius: 10px; padding: 9px 12px; font-size: 12px; font-weight: 700;
     background: rgba(255,255,255,.2); color: #fff;
@@ -1231,8 +1237,17 @@ function polygonAreaMasu(points) {
 }
 function masuToTatami(masu) { return Math.round((masu / MASU_PER_TATAMI) * 100) / 100; }
 
-// 畳 → ㎡・坪。不動産公正競争規約の「1畳 = 1.62㎡以上」に合わせる。
-const SQM_PER_TATAMI = 1.62;
+// 畳 → ㎡・坪。
+//
+// ★2026-09-12: 最初は「1畳 = 1.62㎡」で換算したが、これは規約の読み違いだった。
+//   不動産公正競争規約の「1畳あたり1.62㎡以上」は、**畳数で広さを書くときに
+//   守るべき下限**（各室の壁心面積 ÷ 畳数 が 1.62㎡以上）であって、
+//   既に分かっている面積を 1.62 で計算し直せという意味ではない。
+//   実際、この図は 1マス = 910mm角なので 3×4マスの部屋は 9.9372㎡ だが、
+//   1.62で出すと 9.72㎡ になり、手で8畳に直すと形はそのままで 12.96㎡ に増えた。
+//   この図の幾何（1マス=910mm角、2マス=1畳）どおりに換算する。
+const SQM_PER_MASU = 0.91 * 0.91;                        // 1マス = 0.8281㎡
+const SQM_PER_TATAMI = MASU_PER_TATAMI * SQM_PER_MASU;   // 2マス = 1.6562㎡
 const SQM_PER_TSUBO = 3.305785;
 function tatamiToSqm(tatami) { return tatami * SQM_PER_TATAMI; }
 function formatArea(tatami) {
@@ -1328,16 +1343,15 @@ function render() {
   for (const room of state.rooms) drawRoomFill(room);
   for (const room of state.rooms) drawRoomWalls(room, openings);
   for (const room of state.rooms) drawRoomDoors(room);
-  for (const room of state.rooms) drawRoomDecor(room);
-  // 外開きの開き戸は、部屋の外(隣室・屋外側)へ意図的にスイングするため、
-  // どの部屋がクリップも無く最後に描く(そうしないと、後から描かれる別の
-  // 部屋の塗りつぶしの下に隠れてしまうことがあるため)。
-  // U字・コの字型の階段の矢印も同じ理由(部屋の凹みを通ることがある)で、
-  // クリップの外からここで描く(drawStairArrowIfNeeded参照)。
+  // 外開きの開き戸とU字階段の矢印は、部屋のクリップの外から描く必要がある
+  // (外開きは隣室側へ、U字の矢印は部屋の凹みを通ることがあるため)。
+  // ★室名より**先**に描く。あとに描くと、文字の白い縁取りが先に置かれている
+  //   ぶん役に立たず、扉板や矢印が室名を横切って文字を切り裂いていた。
   state.rooms.forEach((room) => {
     (room.doors || []).filter((d) => isOutwardHingeDoor(d)).forEach((d) => drawDoorMark(room, d));
     drawStairArrowIfNeeded(room);
   });
+  for (const room of state.rooms) drawRoomDecor(room);
   // 選択中の青い頂点ハンドルと設備のつまみ。触るためのものなので書き出しでは描かない
   if (!isExportRender && currentTool === "wall" && editingRoom) { drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom); }
 
@@ -1606,10 +1620,15 @@ function drawRoomDecor(room) {
   let labelX = c.x, labelY = c.y;
   if (room.typeKey === "kaidan") {
     // 階段は上りの矢印が部屋の真ん中を通るので、室名を端へ寄せる。
-    // 中央に置くと必ず矢印と重なり、白い縁取りで矢印が途切れて見えていた。
+    // ★寄せる先は「矢印の始点側」。矢じりのある側へ寄せると、室名の白い縁取り
+    //   (lineWidth 3)が矢じりを塗り潰し、どちらへ上るのか読めなくなっていた。
+    //   既定の向き(0°)は下から上へ上るので、室名は下端へ寄せる。
     const ys = room.points.map((p) => gridToScreen(p.gx, p.gy).y);
-    const 上端 = Math.min(...ys);
-    const 候補 = 上端 + Math.min(18, (Math.max(...ys) - 上端) * 0.12) + 8;
+    const 上端 = Math.min(...ys), 下端 = Math.max(...ys);
+    const r = room.stairRotation != null ? room.stairRotation : (room.stairFlip ? 180 : 0);
+    const 矢じりが上 = !(r === 180 || r === 270);
+    const 寄せ = Math.min(20, (下端 - 上端) * 0.14) + 10;
+    const 候補 = 矢じりが上 ? 下端 - 寄せ : 上端 + 寄せ;
     if (pointInRoomScreen(room, labelX, 候補)) labelY = 候補;
   }
   if (hasFixture) {
@@ -1690,7 +1709,8 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     // キッチンカウンター: シンクゾーンとコンロゾーンを仕切り線で分け、
     // シンクには水栓、コンロは3口で描き、実際の設備配置に近づける
     // システムキッチン 2550 × 650mm(I型)。壁一面に付く長いカウンター。
-    const w = unit * 2.55, h = unit * 0.71;
+    // ★2.55マスと書いていたのは mm とマスの取り違え。2550mm ÷ 910 = 2.80マス。
+    const w = unit * 2.80, h = unit * 0.71;
     dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
     const dividerX = cx - w / 2 + w * 0.42;
     dctx.beginPath();
@@ -1751,7 +1771,6 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     dctx.arc(cx + w * 0.34, cy + h * 0.18, unit * 0.05, 0, Math.PI * 2);
     dctx.stroke();
   } else if (typeKey === "senmen") {
-    // 洗面台: カウンター+ボウル+排水口+水栓+鏡(点線)を描き、
     // 単なる楕円だけでなく実際の洗面化粧台らしい見た目にする
     const w = unit * 0.82, h = unit * 0.55;
     dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
@@ -1768,9 +1787,7 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     dctx.beginPath();
     dctx.arc(cx, cy - h / 2 - unit * 0.08, unit * 0.025, 0, Math.PI * 2);
     dctx.stroke();
-    dctx.setLineDash([unit * 0.03, unit * 0.03]);
     dctx.strokeRect(cx - w * 0.4, cy - h / 2 - unit * 0.22, w * 0.8, unit * 0.12);
-    dctx.setLineDash([]);
   }
   dctx.restore();
 }
@@ -2294,7 +2311,7 @@ const FIXTURE_SIZE_MASU = {
   yokushitsu: { w: 1.54, d: 0.88 },   // 浴槽 1400 × 800mm
   wc:         { w: 0.50, d: 0.77 },   // 洋式便器 455 × 700mm(タンク込み)
   senmen:     { w: 0.82, d: 0.55 },   // 洗面化粧台 750 × 500mm
-  kitchen:    { w: 2.55, d: 0.71 },   // システムキッチン 2550 × 650mm
+  kitchen:    { w: 2.80, d: 0.71 },   // システムキッチン 2550 × 650mm(2550/910=2.80マス)
 };
 
 // 設備を据える壁を選ぶ。
@@ -2494,11 +2511,15 @@ function doorSegment(room, door) {
   const windingSign = roomWindingSign(room);
   const nx = -uy * windingSign, ny = ux * windingSign; // 法線(常に壁から室内側へ90度)
 
-  // 幅。px下限16は「指でつまめる大きさ」のためだが、これを最後にかけると
-  // 短い壁では開口が壁より長くなって外へはみ出す。下限のあとに辺の長さで頭打ちにする。
+  // 幅は実寸(マス)で決める。
+  // ★px下限16(「指でつまめる大きさ」)をここでかけていたため、画面を縮小すると
+  //   開口が実寸より広がっていた。0.3マス(27cm)のFIX窓が、倍率0.4では
+  //   0.714マス(65cm)の開口になり、保存画像(倍率1で確定)と食い違っていた。
+  //   スマホで全体を表示すると常にこの倍率域なので、見た目と成果物がずれる。
+  //   指でつまむ大きさは当たり判定の話なので、描画からは外した。
   const w0 = (Number.isFinite(door.widthMasu) && door.widthMasu > 0) ? door.widthMasu : 0.85;
   const widthMasu = Math.min(w0, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
-  const doorWidth = Math.min(Math.max(16, widthMasu * BASE_CELL * view.scale), edgeLen * 0.96);
+  const doorWidth = Math.min(widthMasu * BASE_CELL * view.scale, edgeLen * 0.96);
   const half = doorWidth / 2;
   // 中心が端に寄りすぎると開口が角をまたいでしまうので、辺の中に収める
   const r = Number.isFinite(door.ratio) ? door.ratio : 0.5;
@@ -2710,12 +2731,12 @@ function updateTotals() {
     const overlapsCountedRoom = countedRooms.some((r) => isPointInPolygonGrid(centroid.gx, centroid.gy, r.points));
     if (overlapsCountedRoom) total -= ex.tatami;
   });
-  const 畳 = Math.round(total * 2) / 2;
+  const 畳 = Math.max(0, Math.round(total * 2) / 2);
   $("totalTatami").textContent = 畳;
-  // マイソクには㎡と坪が要る(畳だけでは載せられない)。畳→㎡は不動産公正競争規約の
-  // 「1畳 = 1.62㎡以上」に合わせる。この図の1マスは910mm角なので2マス=1.6562㎡だが、
-  // 広告に載せる数字は規約どおりの1.62で出す(実際より大きく書かないため)。
-  $("totalArea").textContent = 畳 > 0 ? `(${formatArea(畳)}) ` : "";
+  // マイソクには㎡と坪が要る(畳だけでは載せられない)。
+  // ★㎡は**丸める前の合計**から出す。0.5畳に丸めた値から換算すると、丸めの誤差が
+  //   そのまま面積になっていた(6.25畳→6.5畳で 0.405㎡ 増えていた)。
+  $("totalArea").textContent = total > 0 ? `(${formatArea(total)}) ` : "";
   $("roomCount").textContent = countedRooms.length;
   $("projectTitle").textContent = `${state.projectName} - ${state.floorName}`;
 }
@@ -3283,7 +3304,8 @@ function commitPendingVertexOnRelease(sx, sy) {
 function finalizeActiveDrags() {
   if (vertexDrag) {
     const room = vertexDrag.room;
-    room.tatami = masuToTatami(polygonAreaMasu(room.points));
+    // 手で直した広さは上書きしない(実測して入れた値が消えてしまうため)。
+    if (!room.tatamiManual) room.tatami = masuToTatami(polygonAreaMasu(room.points));
     vertexDrag = null;
     render(); autoSave();
     return true;
@@ -3426,12 +3448,20 @@ document.addEventListener("pointermove", (e) => {
   drawGrid(); render();
 }, true);
 
+// 掴んでいる状態を必ず解く。ボタンを離した合図が来ないまま画面から離れることが
+// あるため(別のアプリへ切り替える、着信で画面が変わる)、blur でもここを通す。
+// ★解かないと、次にマウスを動かしただけで図面が付いてきて、壁も描けなくなる。
+//   例外が出るわけではないので「壊れた」と気づけず、リロードして描きかけを失う。
+function 掴むのをやめる(pointerId) {
+  if (!panDrag) return;
+  try { drawCanvas.releasePointerCapture(pointerId != null ? pointerId : panDrag.id); } catch (err) { /* 既に外れていることがある */ }
+  panDrag = null;
+  掴む形にする();
+}
 function endPan(e) {
   if (!panDrag || e.pointerId !== panDrag.id) return;
   e.stopPropagation();
-  try { drawCanvas.releasePointerCapture(e.pointerId); } catch (err) { /* 既に外れていることがある */ }
-  panDrag = null;
-  掴む形にする();
+  掴むのをやめる(e.pointerId);
 }
 document.addEventListener("pointerup", endPan, true);
 document.addEventListener("pointercancel", endPan, true);
@@ -3442,7 +3472,10 @@ drawCanvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDe
 function 入力中か(el) {
   if (!el) return false;
   const t = (el.tagName || "").toLowerCase();
-  return t === "input" || t === "textarea" || t === "select" || el.isContentEditable;
+  // button も外す。フォーカスの当たったボタンは Space で押せるのがブラウザの決まりで、
+  // ここで横取りすると「見えているのに押せないボタン」ができる。
+  return t === "input" || t === "textarea" || t === "select" || t === "button"
+    || el.getAttribute("role") === "button" || el.isContentEditable;
 }
 function モーダルが開いているか() {
   return !!document.querySelector(".modal-overlay.show");
@@ -3450,6 +3483,14 @@ function モーダルが開いているか() {
 
 document.addEventListener("keydown", (e) => {
   if (入力中か(e.target)) return;
+  if (e.isComposing || e.keyCode === 229) return;   // 日本語入力の変換中
+
+  // ★モーダルが開いているあいだは、ショートカットを1つも効かせない。
+  //   ここを Ctrl+Z より後ろに置いていたため、畳数や建具の画面を開いたまま
+  //   Ctrl+Z を押すと、モーダルが掴んでいる部屋が配列ごと作り直されて幽霊になり、
+  //   そのあとの「確定」も「削除」も黙って効かなくなっていた(例外も出ない)。
+  //   モーダル中は「戻す」ボタン自体が覆われていて押せないので、止めるのが筋。
+  if (モーダルが開いているか()) return;
 
   if (e.code === "Space") {                     // 押している間だけ「つかむ」
     if (!spaceHeld) { spaceHeld = true; 掴む形にする(); }
@@ -3462,9 +3503,6 @@ document.addEventListener("keydown", (e) => {
   if (ctrl && k === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if (ctrl && k === "y") { e.preventDefault(); redo(); return; }
   if (ctrl || e.altKey) return;
-
-  // モーダルが開いているときは、その中の操作を邪魔しない
-  if (モーダルが開いているか()) return;
 
   if (e.key === "Escape") {
     if (drawingPoints.length > 0) { cancelDrawing(); e.preventDefault(); }
@@ -3485,8 +3523,9 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("keyup", (e) => {
   if (e.code === "Space") { spaceHeld = false; 掴む形にする(); }
 });
-// 画面から離れている間にキーを離すと押しっぱなし扱いのまま戻ってくるため、戻ったら解除する
-window.addEventListener("blur", () => { spaceHeld = false; 掴む形にする(); });
+// 画面から離れている間にキーやボタンを離すと、押しっぱなし・掴みっぱなしの扱いの
+// まま戻ってくる。スペースだけでなく、図面を掴んでいる状態もここで必ず解く。
+window.addEventListener("blur", () => { spaceHeld = false; 掴むのをやめる(); 掴む形にする(); });
 
 function cancelDrawing() {
   drawingPoints = []; previewPoint = null; isPointerDrawing = false; dragAxis = null; lastRawPos = null;
@@ -3565,7 +3604,9 @@ function stepTatami(d) {
 
 function openTatamiModal(type, tatami, sourceText, isEdit) {
   $("tatamiTitle").textContent = `${type.label} の広さ`;
-  $("tatamiSourceLabel").textContent = sourceText;
+  // 手で直した部屋を開き直したとき「マス目から自動計算」と出ていた(事実と違う)
+  const 手直し = isEdit && editingRoom && editingRoom.tatamiManual;
+  $("tatamiSourceLabel").textContent = 手直し ? "手で直した広さ" : sourceText;
   $("tatamiValue").textContent = formatTatami(tatami);
   updateTatamiSub(tatami);
   showModal("tatamiModal");
@@ -3655,11 +3696,15 @@ function confirmTatami() {
   if (editingRoom) {
     snapshot();
     editingRoom.tatami = v;
+    // 手で直したかどうかを覚えておく。覚えないと、そのあと頂点を1つ動かしただけで
+    // マス目からの再計算に黙って上書きされ、実測して入れた値が消えていた。
+    editingRoom.tatamiManual = (v !== masuToTatami(polygonAreaMasu(editingRoom.points)));
     if (isStair) { editingRoom.stepCount = stepCount; editingRoom.stairRotation = stairRotation; }
     editingRoom = null;
   } else {
     snapshot();
     const room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
+    if (v !== masuToTatami(polygonAreaMasu(pendingRoom.points))) room.tatamiManual = true;
     if (isStair) { room.stepCount = stepCount; room.stairRotation = stairRotation; }
     state.rooms.push(room);
     pendingRoom = null;
@@ -4166,8 +4211,18 @@ function drawBuildingOutline(octx, w, h, scale, pad) {
   dctx2.drawImage(off, 0, 0);
   // 外周の輪にも、開口部(窓・戸)の穴を開ける。ここを開けないと、部屋側の壁線を
   // 切っても保存画像では太い外壁が開口をふさいだままになる。
-  // 内壁の建具は輪の無い場所なので対象外にする。無害に見えて、外壁のすぐ内側を
-  // 走る間仕切りの建具だと、その穴が外壁の輪まで届いて余計に削ってしまう。
+  //
+  // ★以前は「内壁の建具は輪が無いので対象外」として除いていたが、これが
+  //   もっと悪い不具合を生んでいた。部屋どうしに 0.125〜0.25マス(11〜23cm)の
+  //   隙間があると、輪の膨張(20方向・半径 strokeW)がその隙間を黒く埋める一方、
+  //   外壁かどうかの判定(室外へ0.25マス出た点が部屋の中か)も同じ0.25マスで
+  //   「内壁」と誤判定するため、**開口が真っ黒に潰れた**。
+  //   しかも画面には輪を描かないので、画面では正常に見えて保存画像だけが壊れる。
+  //   指でなぞって描く以上、ベランダや玄関ポーチを本体と1目盛ずらして置くのは
+  //   日常的に起きる。輪の無い場所に穴を開けても消すものが無いので、
+  //   **全部の開口に穴を開ける**ようにした。
+  //   残る課題: 外壁から 0.13マス 以内を走る間仕切りの建具は、その外壁を
+  //   削りうる(消しゴムの半幅ぶん)。こちらの方が起きにくいので、当面は許容する。
   // 消去の幅は、輪の厚み(strokeW)の内外ぶん = (strokeW + 余裕) * 2。
   // strokeW はすでに保存先の単位なので、ここで scale を掛け直さないこと。
   dctx2.lineCap = "butt";     // 丸めると開口の端より先まで消える
@@ -4175,7 +4230,7 @@ function drawBuildingOutline(octx, w, h, scale, pad) {
   dctx2.lineWidth = (strokeW + 1.5) * 2;
   state.rooms.forEach((room) => (room.doors || []).forEach((d) => {
     const g = doorSegment(room, d);
-    if (!g || !isOnBuildingEdge(g)) return;
+    if (!g) return;
     dctx2.beginPath();
     dctx2.moveTo(g.a.x * scale + pad, g.a.y * scale + pad);
     dctx2.lineTo(g.b.x * scale + pad, g.b.y * scale + pad);
