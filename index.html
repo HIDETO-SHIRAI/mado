@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-12-3">
+<meta name="app-version" content="2026-09-12-4">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -24,7 +24,7 @@
     --bg: #f4f6f9;
     --panel: #ffffff;
     --text: #1c2733;
-    --muted: #7c8996;
+    --muted: #6c7782;   /* 白地で4.57:1。#7c8996 は3.57:1 でWCAG AA(通常文字4.5:1)に届いていなかった */
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
   html, body {
@@ -326,8 +326,6 @@
     <button class="iconbtn" id="btnSnapMode" title="点を置く細かさ"><span>🔳</span><span class="cap">細かさ <span id="snapModeLabel">1/1</span></span></button>
     <button class="iconbtn emphasis" id="btnUndo" title="元に戻す"><span>↩︎</span><span class="cap">戻す</span></button>
     <button class="iconbtn emphasis" id="btnRedo" title="やり直す"><span>↪︎</span><span class="cap">進む</span></button>
-    <!-- 建具の描画不具合の調査用に一時的に追加したボタン。原因特定後に削除予定。 -->
-    <button class="iconbtn" id="btnDebugExport" title="調査用データコピー(一時的)"><span>🔧</span><span class="cap">調査用</span></button>
   </div>
 
   <div id="canvasWrap">
@@ -338,7 +336,7 @@
       <div id="compassRotor"><span class="arrow">▲</span><span>N</span></div>
     </div>
     <div id="totals"><b id="totalTatami">0</b> 畳 ／ <span id="roomCount">0</span> 部屋</div>
-    <div id="zoomHint">2本指でズーム/移動</div>
+    <div id="zoomHint">2本指でズーム/移動</div><!-- パソコンでは onReady で書き換える -->
     <div id="drawingBar">
       <button class="cancel" id="btnCancelDrawing">✕ やめる</button>
       <button id="btnUndoPoint">⌫ 1点戻す</button>
@@ -4062,23 +4060,6 @@ $("btnRedo").addEventListener("click", redo);
 // 建具の描画不具合(実機のみ再現)調査用の一時的な機能。今の階の部屋・建具データを
 // JSONとしてクリップボードにコピーする(個人情報等は含まれない、間取りの数値データのみ)。
 // クリップボードAPIが使えない端末向けに、失敗時は選択してコピーできるテキストエリアを表示する。
-$("btnDebugExport").addEventListener("click", async () => {
-  const data = JSON.stringify({ floorName: state.floorName, rooms: state.rooms }, null, 2);
-  try {
-    await navigator.clipboard.writeText(data);
-    showHint("調査用データをコピーしました。そのまま貼り付けて送ってください", true);
-  } catch (err) {
-    const existing = document.getElementById("debugExportArea");
-    if (existing) existing.remove();
-    const ta = document.createElement("textarea");
-    ta.id = "debugExportArea";
-    ta.value = data;
-    ta.style.cssText = "position:fixed;left:4%;top:8%;width:92%;height:74%;z-index:2147483647;font-size:11px;padding:8px;box-sizing:border-box;background:#fff;border:2px solid #2f6fed;border-radius:8px;";
-    document.body.appendChild(ta);
-    ta.focus(); ta.select();
-    showHint("自動コピーできませんでした。表示されたテキストを長押しして全選択→コピーしてください", true);
-  }
-});
 
 /* ---------------- 画像で保存 ---------------- */
 // 保存用の画像を作る。グリッド線は入力補助用であり、マイソク等の完成図には
@@ -5224,7 +5205,13 @@ whenCloudReady(() => {
     // ★2026-09-12 に足した2行。checkForNewVersion() は定義してあるのに
     //   **どこからも呼ばれておらず、版チェックは一度も動いていなかった**。
     //   中で1日1回に間引き、通信できなければ黙って帰るので、待たずに投げてよい。
-    showAppVersion();
+    // 画面の隅の常設の案内。パソコンには2本指が無いので、そのまま出すと
+  // 「拡大も移動もできない道具」に見える(実際、直前までできなかった)。
+  if (!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) {
+    const zh = $("zoomHint");
+    if (zh) zh.textContent = "ホイールで拡大／スペース+ドラッグで移動";
+  }
+  showAppVersion();
     checkForNewVersion();
     resize();
     updateUndoRedoButtons();
