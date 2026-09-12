@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-12-2">
+<meta name="app-version" content="2026-09-12-3">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -974,6 +974,11 @@ const MIN_RATIO_GAP = 0.12; // 同一壁上で建具同士が近づける最小�
 let colorScheme = localStorage.getItem("madori_color_scheme_v1") || "color";
 const SIMPLE_FILL = "#fdfbf7";
 const SIMPLE_STROKE = "#3a3a3a";
+// 壁の線の色。部屋の種類ごとに枠線の色を変えていたが(17色)、実物の販売図面は
+// 塗りだけで区別し、壁は太さの違う1色で描く。色が多いほど「線」ではなく
+// 「色分けされた面」に見えてしまい、どこが壁なのか読み取りにくかった。
+// 外周の太線(drawBuildingOutline)と同じ色にして、内と外で線がつながって見えるようにする。
+const WALL_COLOR = "#1c2733";
 function setColorScheme(mode) {
   colorScheme = mode;
   localStorage.setItem("madori_color_scheme_v1", mode);
@@ -1307,7 +1312,14 @@ function isOutwardHingeDoor(d) {
 function render() {
   dctx.clearRect(0, 0, W, H);
   if (!isExportRender) drawOtherFloorsGhost();   // 他階の下敷きは、なぞるための補助
-  for (const room of state.rooms) drawRoomPolygon(room);
+  // 部屋ごとに「塗り→壁→建具→文字」を続けて描くと、後から描いた部屋の塗りが
+  // 前の部屋の壁や建具を隠してしまう(重なり順が部屋の並び順で変わる)。
+  // 全部屋分をまとめて4段に分けることで、この副作用を無くす。
+  const openings = collectOpenings();            // 壁を開ける区間(全部屋の建具)
+  for (const room of state.rooms) drawRoomFill(room);
+  for (const room of state.rooms) drawRoomWalls(room, openings);
+  for (const room of state.rooms) drawRoomDoors(room);
+  for (const room of state.rooms) drawRoomDecor(room);
   // 外開きの開き戸は、部屋の外(隣室・屋外側)へ意図的にスイングするため、
   // どの部屋がクリップも無く最後に描く(そうしないと、後から描かれる別の
   // 部屋の塗りつぶしの下に隠れてしまうことがあるため)。
@@ -1388,46 +1400,185 @@ function fixtureScaleFactor(room) {
   return Math.max(0.55, Math.min(1.6, Math.sqrt(areaPx / refArea)));
 }
 
-function drawRoomPolygon(room) {
-  const type = ROOM_TYPES.find((t) => t.key === room.typeKey) || ROOM_TYPES[ROOM_TYPES.length - 1];
-  // 選択中の部屋は枠を太い黒で強調する。これも「触るための印」なので書き出しでは外す
-  // (ハンドルだけ消しても、この太枠が残って1部屋だけ黒縁になる。実際に画像で確認した)。
-  const isEditing = !isExportRender && editingRoom === room;
+// ---- 壁と開口部 ----------------------------------------------------------
+// 2026-09-12: 「窓・ドアが無いように見える」との指摘。原因は、開口部でも壁が
+// 途切れず、壁の上に細い線が添えてあるだけだったこと。プロの販売図面は窓も戸も
+// 壁を切り欠いて開口を示す。そこで壁を「開口部だけ筆を上げて」描くようにした。
+//
+// ★肝心なのは、開口を**全部屋まとめて**集めること。間仕切りの壁は両隣の部屋が
+//   それぞれ自分の輪郭線を引いており、建具は片方の部屋にしか登録されていない。
+//   その部屋の壁だけ切っても、隣の部屋の線が残って開口にならない。
+
+function roomType(room) {
+  return ROOM_TYPES.find((t) => t.key === room.typeKey) || ROOM_TYPES[ROOM_TYPES.length - 1];
+}
+
+// 部屋の多角形をパスにする(塗り・クリップで使い回す)
+function roomPath(room) {
   dctx.beginPath();
   room.points.forEach((p, i) => {
     const { x, y } = gridToScreen(p.gx, p.gy);
     if (i === 0) dctx.moveTo(x, y); else dctx.lineTo(x, y);
   });
   dctx.closePath();
+}
+
+// 全部屋の建具から「壁を開ける区間」を集める
+function collectOpenings() {
+  const list = [];
+  state.rooms.forEach((room) => (room.doors || []).forEach((d) => {
+    const g = doorSegment(room, d);
+    if (g) list.push(g);
+  }));
+  return list;
+}
+
+// この辺のうち開口部になる区間を、辺の先頭からの距離 [開始, 終了] で返す。
+// 別の部屋の建具でも、同じ直線上に重なっていれば対象にする(共有壁のため)。
+function gapsOnEdge(A, ux, uy, len, openings) {
+  const raw = [];
+  for (const g of openings) {
+    if (Math.abs(g.ux * uy - g.uy * ux) > 0.03) continue;     // 平行でない = 別の壁
+    const d1 = (g.a.x - A.x) * (-uy) + (g.a.y - A.y) * ux;    // 辺の直線からの距離
+    const d2 = (g.b.x - A.x) * (-uy) + (g.b.y - A.y) * ux;
+    if (Math.abs(d1) > 1.5 || Math.abs(d2) > 1.5) continue;   // 平行だが離れている
+    let t1 = (g.a.x - A.x) * ux + (g.a.y - A.y) * uy;
+    let t2 = (g.b.x - A.x) * ux + (g.b.y - A.y) * uy;
+    if (t1 > t2) { const s = t1; t1 = t2; t2 = s; }
+    if (t2 <= 0.2 || t1 >= len - 0.2) continue;               // この辺の外
+    raw.push([Math.max(0, t1), Math.min(len, t2)]);
+  }
+  raw.sort((p, q) => p[0] - q[0]);
+  const merged = [];
+  for (const g of raw) {                                      // 重なりを1つにまとめる
+    const last = merged[merged.length - 1];
+    if (last && g[0] <= last[1] + 0.5) last[1] = Math.max(last[1], g[1]);
+    else merged.push([g[0], g[1]]);
+  }
+  return merged;
+}
+
+// 輪郭を一周たどり、開口部だけ筆を上げて描く。
+// 辺ごとにバラバラのサブパスにすると角の継ぎ目(lineJoin)が効かず角が欠けるので、
+// 開口から次の開口までは途中の角も lineTo で通して1本に繋ぐ。
+function strokeOutlineWithOpenings(room, openings) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const n = pts.length;
+  if (n < 2) return;
+  const runs = [];
+  let cur = null;              // 描いている途中の連なり
+  let openAtStart = false;     // 頂点0から筆を下ろして描き始めたか
+  let anyGap = false;
+  for (let i = 0; i < n; i++) {
+    const A = pts[i], B = pts[(i + 1) % n];
+    const len = Math.hypot(B.x - A.x, B.y - A.y);
+    if (len < 0.5) continue;
+    const ux = (B.x - A.x) / len, uy = (B.y - A.y) / len;
+    const gaps = gapsOnEdge(A, ux, uy, len, openings);
+    if (gaps.length) anyGap = true;
+    const at = (t) => ({ x: A.x + ux * t, y: A.y + uy * t });
+    let t = 0;
+    for (const g of gaps) {
+      if (g[0] > t) {
+        if (!cur) { cur = [at(t)]; if (i === 0 && t === 0) openAtStart = true; }
+        cur.push(at(g[0]));
+      }
+      if (cur) { runs.push(cur); cur = null; }                // 開口で筆を上げる
+      t = Math.max(t, g[1]);
+    }
+    if (t < len) {
+      if (!cur) { cur = [at(t)]; if (i === 0 && t === 0) openAtStart = true; }
+      cur.push(i === n - 1 ? pts[0] : B);
+    }
+  }
+  if (!anyGap) { roomPath(room); dctx.stroke(); return; }     // 建具が無い部屋は従来通り
+  const closedAtEnd = !!cur;                                  // 頂点0まで筆を下ろしたまま戻った
+  if (cur) runs.push(cur);
+  // 頂点0をまたぐ部分は、末尾と先頭を繋いで1本にする(別々だとその角だけ継ぎ目が出る)
+  if (closedAtEnd && openAtStart && runs.length >= 2) {
+    const last = runs.pop();
+    runs[0] = last.concat(runs[0].slice(1));
+  }
+  dctx.beginPath();
+  runs.forEach((run) => run.forEach((p, i) => {
+    if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y);
+  }));
+  dctx.stroke();
+}
+
+// この開口が建物の外周にあるか。壁の外側へ少し出た点がどの部屋にも入って
+// いなければ外壁。保存画像の外周の輪に穴を開けるかどうかの判定に使う
+// (内壁の建具にまで穴あけをかけると、近くを走る別の外壁まで削りかねない)。
+function isOnBuildingEdge(g) {
+  const d = BASE_CELL * view.scale * 0.25;
+  const x = g.center.x - g.nx * d, y = g.center.y - g.ny * d;   // nx,nyは室内向き
+  return !state.rooms.some((room) => pointInRoomScreen(room, x, y));
+}
+function pointInRoomScreen(room, x, y) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+// ---- 4段の描画 -----------------------------------------------------------
+
+// (1) 床の色。開口部にも床は続いているので、塗りは切らない
+function drawRoomFill(room) {
+  const type = roomType(room);
+  roomPath(room);
   dctx.fillStyle = colorScheme === "simple" ? SIMPLE_FILL : type.color;
   dctx.fill();
-  dctx.lineWidth = isEditing ? 5 : 3;
-  dctx.strokeStyle = isEditing ? "#1c2733" : (colorScheme === "simple" ? SIMPLE_STROKE : type.stroke);
-  dctx.stroke();
   if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
+}
 
-  // 内開きの建具・設備アイコンが部屋の外(隣室側)へ描画はみ出さないよう、
-  // この部屋自身の多角形でクリップしてから描画する(角付近に開き戸を置いた際に
-  // 円弧が隣の部屋へ入り込むバグの対策)。外開きの開き戸は意図的に壁の外側
-  // (隣室・屋外側)へスイングするため、このクリップの対象からは除外し、
-  // 全部屋を描き終えた後に別途まとめて描く(render()側を参照。そうしないと、
-  // 後から描かれる隣室の塗りつぶしの下に隠れてしまうため)。
-  const doors = (room.doors || []).filter((d) => !isOutwardHingeDoor(d));
-
+// (2) 壁。建具のあるところは描かない = そこが開口部になる
+function drawRoomWalls(room, openings) {
+  // 選択中の部屋は枠を太くして強調する。これも「触るための印」なので書き出しでは外す
+  // (ハンドルだけ消しても、この太枠が残って1部屋だけ黒縁になる。実際に画像で確認した)。
+  const isEditing = !isExportRender && editingRoom === room;
   dctx.save();
-  dctx.beginPath();
-  room.points.forEach((p, i) => {
-    const { x, y } = gridToScreen(p.gx, p.gy);
-    if (i === 0) dctx.moveTo(x, y); else dctx.lineTo(x, y);
-  });
-  dctx.closePath();
-  dctx.clip();
-  doors.forEach((d) => drawDoorMark(room, d));
-  if (room.typeKey === "kaidan") drawStairSymbol(room);
+  dctx.lineWidth = isEditing ? 5 : 3;
+  dctx.strokeStyle = colorScheme === "simple" ? SIMPLE_STROKE : WALL_COLOR;
+  dctx.lineCap = "butt";     // 丸めると開口の中まで線が伸びて、せっかくの切れ目が埋まる
+  dctx.lineJoin = "miter";
+  strokeOutlineWithOpenings(room, openings);
+  dctx.restore();
+}
 
+// (3) 建具の記号
+function isSwingDoor(d) { return d.type === "hinge" || d.type === "hinge_double"; }
+function drawRoomDoors(room) {
+  const doors = (room.doors || []).filter((d) => !isOutwardHingeDoor(d));
+  if (doors.length === 0) return;
+  // 引き戸・窓は壁の両側にまたがる記号なので、部屋でクリップすると外側
+  // (隣室・屋外側)の線だけが消えて、片側しか無い妙な形になる。クリップしない。
+  doors.filter((d) => !isSwingDoor(d)).forEach((d) => drawDoorMark(room, d));
+  // 内開きの開き戸は弧が室内へ大きく振れるので、従来どおり部屋の中に収める
+  // (角付近に置いた際に円弧が隣の部屋へ入り込むのを防ぐ)。外開きは意図的に
+  // 壁の外側へスイングするため、全部屋を描き終えた後に別途まとめて描く(render参照)。
+  const swings = doors.filter((d) => isSwingDoor(d));
+  if (swings.length === 0) return;
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  swings.forEach((d) => drawDoorMark(room, d));
+  dctx.restore();
+}
+
+// (4) 階段・設備の絵と、室名の文字
+function drawRoomDecor(room) {
+  const type = roomType(room);
   const c = polygonCentroidScreen(room.points);
   const areaPx = polygonScreenArea(room.points);
   const hasFixture = roomHasFixture(room);
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  if (room.typeKey === "kaidan") drawStairSymbol(room);
   if (hasFixture) {
     const fp = gridToScreen(fixtureGridPos(room).gx, fixtureGridPos(room).gy);
     dctx.save();
@@ -2153,15 +2304,73 @@ function roomWindingSign(room) {
   }
   return sum >= 0 ? 1 : -1;
 }
-function drawDoorMark(room, door) {
-  const p1 = room.points[door.edge];
-  const p2 = room.points[(door.edge + 1) % room.points.length];
+// 建具が「壁のどこからどこまでを開けるか」を求める。壁を切る処理・記号の描画・
+// 保存画像の外周の穴あけが、すべてこの同じ区間を使う(別々に計算すると、ほんの
+// 少しずつずれて開口の端から線がはみ出す)。
+function doorSegment(room, door) {
+  const pts = room.points;
+  if (!pts || pts.length < 2) return null;
+  const p1 = pts[door.edge], p2 = pts[(door.edge + 1) % pts.length];
+  if (!p1 || !p2) return null;
   const s1 = gridToScreen(p1.gx, p1.gy), s2 = gridToScreen(p2.gx, p2.gy);
   const edgeLen = Math.hypot(s2.x - s1.x, s2.y - s1.y);
-  if (edgeLen < 1) return;
+  if (!(edgeLen > 1)) return null;
   const ux = (s2.x - s1.x) / edgeLen, uy = (s2.y - s1.y) / edgeLen; // 壁沿いの単位ベクトル
   const windingSign = roomWindingSign(room);
-  let nx = -uy * windingSign, ny = ux * windingSign; // 法線ベクトル(常に壁から室内側へ90度)
+  const nx = -uy * windingSign, ny = ux * windingSign; // 法線(常に壁から室内側へ90度)
+
+  // 幅。px下限16は「指でつまめる大きさ」のためだが、これを最後にかけると
+  // 短い壁では開口が壁より長くなって外へはみ出す。下限のあとに辺の長さで頭打ちにする。
+  const w0 = (Number.isFinite(door.widthMasu) && door.widthMasu > 0) ? door.widthMasu : 0.85;
+  const widthMasu = Math.min(w0, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
+  const doorWidth = Math.min(Math.max(16, widthMasu * BASE_CELL * view.scale), edgeLen * 0.96);
+  const half = doorWidth / 2;
+  // 中心が端に寄りすぎると開口が角をまたいでしまうので、辺の中に収める
+  const r = Number.isFinite(door.ratio) ? door.ratio : 0.5;
+  const t = Math.min(Math.max(edgeLen * r, half), edgeLen - half);
+  const center = { x: s1.x + ux * t, y: s1.y + uy * t };
+  const a = { x: center.x - ux * half, y: center.y - uy * half };
+  const b = { x: center.x + ux * half, y: center.y + uy * half };
+  return { s1, s2, edgeLen, ux, uy, nx, ny, windingSign, center, a, b, doorWidth, widthMasu };
+}
+
+// 引き戸の戸板を1枚描く。開口の中の p→q に、壁の中心から off だけずらした
+// 細長い長方形を置く。線1本だと「戸」に見えず、引き違いの重なりも分からない
+// (4本の平行線で表していた頃は「柵」に見えるという問題があった)。
+function drawSlideLeaf(p, q, ux, uy, nx, ny, off, thick) {
+  const o1 = off + thick / 2, o2 = off - thick / 2;
+  dctx.beginPath();
+  dctx.moveTo(p.x + nx * o1, p.y + ny * o1);
+  dctx.lineTo(q.x + nx * o1, q.y + ny * o1);
+  dctx.lineTo(q.x + nx * o2, q.y + ny * o2);
+  dctx.lineTo(p.x + nx * o2, p.y + ny * o2);
+  dctx.closePath();
+  dctx.fillStyle = "#ffffff";      // 奥の戸と重なったとき、手前がどちらか分かるように塗る
+  dctx.fill();
+  dctx.stroke();
+}
+
+// 開口の両端に、壁と直交する短い線(枠)を描く。壁を切りっぱなしにすると
+// 開口の端がどこまでなのか分からず、床の色がにじみ出たように見える。
+// 実物の販売図面も、開口の端は必ず枠で閉じてある。
+function drawOpeningJamb(a, b, nx, ny, half, zs) {
+  const w = dctx.lineWidth, c = dctx.strokeStyle;
+  dctx.lineWidth = 1.6 * zs;
+  dctx.strokeStyle = WALL_COLOR;
+  dctx.beginPath();
+  dctx.moveTo(a.x + nx * half, a.y + ny * half);
+  dctx.lineTo(a.x - nx * half, a.y - ny * half);
+  dctx.moveTo(b.x + nx * half, b.y + ny * half);
+  dctx.lineTo(b.x - nx * half, b.y - ny * half);
+  dctx.stroke();
+  dctx.lineWidth = w; dctx.strokeStyle = c;
+}
+
+function drawDoorMark(room, door) {
+  const g = doorSegment(room, door);
+  if (!g) return;
+  const { ux, uy, windingSign, center, a, b, doorWidth } = g;
+  let nx = g.nx, ny = g.ny;
   const type = door.type;
   // 開き戸(hinge/hinge_double)は、内開き(既定)なら室内側へ、外開きなら
   // 法線を反転させて壁の外側(隣室・屋外など)へスイングするようにする。
@@ -2169,12 +2378,6 @@ function drawDoorMark(room, door) {
   if ((type === "hinge" || type === "hinge_double") && door.swingOut) {
     nx = -nx; ny = -ny;
   }
-
-  const center = { x: s1.x + ux * edgeLen * door.ratio, y: s1.y + uy * edgeLen * door.ratio };
-  const widthMasu = Math.min(door.widthMasu || 0.85, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
-  const doorWidth = Math.max(16, widthMasu * BASE_CELL * view.scale);
-  const a = { x: center.x - ux * doorWidth / 2, y: center.y - uy * doorWidth / 2 };
-  const b = { x: center.x + ux * doorWidth / 2, y: center.y + uy * doorWidth / 2 };
   const flip = !!door.flip;
 
   // 窓(window_slide/window_fix)はドア系と色を分け、盤面上でも種類の
@@ -2186,7 +2389,10 @@ function drawDoorMark(room, door) {
   const isWindow = type === "window_slide" || type === "window_fix";
   const zs = Math.max(0.7, view.scale);
   dctx.save();
-  dctx.strokeStyle = isWindow ? "#1565c0" : "#1c2733";
+  // 以前は窓だけ青くして「壁の上の細線」から目立たせていた。壁を実際に開口部で
+  // 切るようにしたので、色を変えなくても窓の位置は一目で分かる。実物の販売図面も
+  // 建具は壁と同じ1色で、形(2本線か、弧か)だけで区別している。
+  dctx.strokeStyle = WALL_COLOR;
   // 保存画像をスマホのプレビュー幅(数百px)まで縮小表示されると、片引き戸・
   // 引き違い戸・窓の細い線が壁線に埋もれて判別できなくなるとの指摘を受け、
   // 線幅とオフセット間隔を全体的に太く・広くした(実務シナリオ評価で発見)。
@@ -2211,56 +2417,50 @@ function drawDoorMark(room, door) {
     if (!flip) drawHingeLeaf(a, ux, uy, nx, ny, doorWidth, false, effectiveSwingOut);
     else drawHingeLeaf(b, -ux, -uy, nx, ny, doorWidth, false, !effectiveSwingOut);
   } else if (type === "slide") {
-    // 片引き戸: 壁厚の中に平行2本線+戸袋側(a方向)への破線延長で引き込みを表現
-    const off = 4.5 * zs;
-    dctx.beginPath();
-    dctx.moveTo(a.x + nx * off, a.y + ny * off);
-    dctx.lineTo(b.x + nx * off, b.y + ny * off);
-    dctx.moveTo(a.x - nx * off, a.y - ny * off);
-    dctx.lineTo(b.x - nx * off, b.y - ny * off);
-    dctx.stroke();
+    // 片引き戸: 開口いっぱいの戸1枚を太めの線1本で表し、戸袋へ引き込む向きを
+    // 点線で示す。壁はすでに開口部で切れている(drawRoomWalls)ので、以前の
+    // 「平行2本線で壁厚を表す」描き方は不要になった。
+    const off = 2.2 * zs;
+    dctx.lineWidth = 1.6 * zs;
+    drawSlideLeaf(a, b, ux, uy, nx, ny, off, 2.6 * zs);
     const ext = flip ? { x: b.x + ux * doorWidth * 0.9, y: b.y + uy * doorWidth * 0.9 } : { x: a.x - ux * doorWidth * 0.9, y: a.y - uy * doorWidth * 0.9 };
     const base = flip ? b : a;
+    dctx.lineWidth = 1.6 * zs;
     dctx.setLineDash([3, 3]);
     dctx.beginPath();
     dctx.moveTo(base.x + nx * off, base.y + ny * off);
     dctx.lineTo(ext.x + nx * off, ext.y + ny * off);
     dctx.stroke();
     dctx.setLineDash([]);
+    drawOpeningJamb(a, b, nx, ny, 4.5 * zs, zs);
   } else if (type === "slide_double") {
-    // 引き違い戸: 2枚の障子が別々の溝を通ることを示すため、間隔を大きく
-    // 広げた2組(計4本)の平行線にし、片引き戸(2本)とはっきり区別する
-    [3, 8.5].forEach((off0) => {
-      const off = off0 * zs;
-      dctx.beginPath();
-      dctx.moveTo(a.x + nx * off, a.y + ny * off);
-      dctx.lineTo(b.x + nx * off, b.y + ny * off);
-      dctx.moveTo(a.x - nx * off, a.y - ny * off);
-      dctx.lineTo(b.x - nx * off, b.y - ny * off);
-      dctx.stroke();
-    });
+    // 引き違い戸: 2枚の戸が別々の溝を通る。開口を左右半分ずつに分け、
+    // 一方を手前の溝、もう一方を奥の溝へずらして中央で少し重ねる(実物の
+    // 販売図面と同じ描き方)。以前は等間隔の平行線4本で、戸ではなく
+    // 「柵」に見えるという問題があった。
+    const off = 2.2 * zs;
+    const thick = 2.6 * zs;
+    const over = doorWidth * 0.08;        // 中央での重なり
+    const m1 = { x: center.x + ux * over, y: center.y + uy * over };
+    const m2 = { x: center.x - ux * over, y: center.y - uy * over };
+    dctx.lineWidth = 1.6 * zs;
+    drawSlideLeaf(m2, b, ux, uy, nx, ny, -off, thick);   // 奥の1枚を先に
+    drawSlideLeaf(a, m1, ux, uy, nx, ny, off, thick);    // 手前の1枚を重ねる
+    drawOpeningJamb(a, b, nx, ny, 4.5 * zs, zs);
   } else {
-    // window_slide / window_fix: 太い外壁線に埋もれて見えなくならないよう、まず
-    // 壁を横切る白い帯で「開口部」をはっきり切り抜いてから、太めのサッシ線を描く
-    // (マイソク品質評価で「窓が見当たらない」と複数回指摘されたための強調修正)。
-    const cutOff = 9 * zs;
-    dctx.save();
-    dctx.strokeStyle = "#ffffff";
-    dctx.lineWidth = cutOff * 2;
-    dctx.beginPath();
-    dctx.moveTo(a.x, a.y);
-    dctx.lineTo(b.x, b.y);
-    dctx.stroke();
-    dctx.restore();
-
-    const off = 6 * zs;
-    dctx.lineWidth = 3.4 * zs;
+    // window_slide / window_fix: 壁はすでに開口部で途切れているので(drawRoomWalls)、
+    // ここは開口をまたぐサッシの線だけを描く。以前は壁が切れていなかったため、
+    // 白い帯で壁を塗りつぶして開口に見せかけていたが、部屋に色が付いていると
+    // そこだけ白く抜けて不自然だった。壁を実際に切るようにしたので廃止した。
+    const off = 3.6 * zs;
+    dctx.lineWidth = 2.2 * zs;
     dctx.beginPath();
     dctx.moveTo(a.x + nx * off, a.y + ny * off);
     dctx.lineTo(b.x + nx * off, b.y + ny * off);
     dctx.moveTo(a.x - nx * off, a.y - ny * off);
     dctx.lineTo(b.x - nx * off, b.y - ny * off);
     dctx.stroke();
+    drawOpeningJamb(a, b, nx, ny, off, zs);
     if (type === "window_slide") {
       // 引き違い窓: 中央に仕切り線を入れ、2枚の障子が引き違うことを表現
       dctx.beginPath();
@@ -2962,6 +3162,152 @@ function endPointer(e) {
 drawCanvas.addEventListener("pointerup", endPointer);
 drawCanvas.addEventListener("pointercancel", endPointer);
 
+/* ---------------- パソコンでの操作 ----------------
+   スマホは指2本でつまんで拡大・移動できるが、パソコンのマウスはポインタが1つしか
+   無いので、これまで**拡大も移動もできなかった**(wheel も keydown も受けていない)。
+   「最後の清書はパソコンでやりたい」という声に応えて次を足した。
+
+     ホイール                … カーソルの位置を軸に拡大・縮小
+     中ボタンのドラッグ       … 図面をつかんで動かす
+     スペースを押しながら左ドラッグ … 同上(中ボタンの無いノートPC向け)
+     Ctrl+Z / Ctrl+Shift+Z   … 戻す / 進む(Ctrl+Y も可)
+     Esc                     … 描きかけを取り消す・選択を外す
+     Enter                   … 3点以上描いてあれば部屋を閉じる
+     Backspace               … 描きかけの点を1つ戻す
+     + / - / 0               … 拡大 / 縮小 / 全体を表示
+
+   ★既存の指の操作(pointerdown〜)には一切手を入れていない。パンだけは document の
+     capture 段で先に横取りし、canvas 側のなぞり描きへ流さないようにしている
+     (同じ要素に足すと登録順で後になり、先になぞり描きが始まってしまう)。
+*/
+const ZOOM_MIN = 0.4, ZOOM_MAX = 3;   // 指でつまんだときと同じ範囲に揃える
+
+// 画面上の点(sx,sy)をその場に留めたまま倍率だけ変える
+function zoomAt(sx, sy, newScale) {
+  const ns = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newScale));
+  if (Math.abs(ns - view.scale) < 1e-6) return;
+  const wx = (sx - view.offX) / view.scale, wy = (sy - view.offY) / view.scale;
+  view.scale = ns;
+  view.offX = sx - wx * ns;
+  view.offY = sy - wy * ns;
+  drawGrid(); render();
+}
+function zoomStep(k) { zoomAt(W / 2, H / 2, view.scale * k); }
+
+// 全部屋が画面に収まる倍率と位置に合わせる
+function fitAllRooms() {
+  if (state.rooms.length === 0) return;
+  let minGx = Infinity, maxGx = -Infinity, minGy = Infinity, maxGy = -Infinity;
+  state.rooms.forEach((r) => r.points.forEach((p) => {
+    minGx = Math.min(minGx, p.gx); maxGx = Math.max(maxGx, p.gx);
+    minGy = Math.min(minGy, p.gy); maxGy = Math.max(maxGy, p.gy);
+  }));
+  const w = (maxGx - minGx) * BASE_CELL, h = (maxGy - minGy) * BASE_CELL;
+  if (!(w > 0) || !(h > 0)) return;
+  const margin = 48;
+  const s = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX,
+    Math.min((W - margin * 2) / w, (H - margin * 2) / h)));
+  view.scale = s;
+  view.offX = (W - w * s) / 2 - minGx * BASE_CELL * s;
+  view.offY = (H - h * s) / 2 - minGy * BASE_CELL * s;
+  drawGrid(); render();
+}
+
+drawCanvas.addEventListener("wheel", (e) => {
+  e.preventDefault();                 // ブラウザ側のページ拡大・スクロールを止める
+  const rect = drawCanvas.getBoundingClientRect();
+  // ホイールは1目盛=100前後、トラックパッドは細かい値が連続で来る。どちらも同じ
+  // 感触になるよう指数で効かせる(足し算だと倍率が小さいときに効きすぎる)。
+  const unit = e.deltaMode === 1 ? 0.05 : 0.0015;   // 1 = 行単位
+  zoomAt(e.clientX - rect.left, e.clientY - rect.top, view.scale * Math.exp(-e.deltaY * unit));
+}, { passive: false });
+
+let spaceHeld = false;
+let panDrag = null;                   // {sx, sy, offX, offY, id}
+
+function 掴む形にする() {
+  drawCanvas.style.cursor = panDrag ? "grabbing" : (spaceHeld ? "grab" : "");
+}
+
+document.addEventListener("pointerdown", (e) => {
+  if (panDrag || e.target !== drawCanvas) return;
+  if (!(e.button === 1 || (spaceHeld && e.button === 0))) return;
+  e.preventDefault(); e.stopPropagation();     // なぞり描きへ流さない
+  panDrag = { sx: e.clientX, sy: e.clientY, offX: view.offX, offY: view.offY, id: e.pointerId };
+  try { drawCanvas.setPointerCapture(e.pointerId); } catch (err) { /* 合成イベントでは失敗しうる */ }
+  掴む形にする();
+}, true);
+
+document.addEventListener("pointermove", (e) => {
+  if (!panDrag || e.pointerId !== panDrag.id) return;
+  e.preventDefault(); e.stopPropagation();
+  view.offX = panDrag.offX + (e.clientX - panDrag.sx);
+  view.offY = panDrag.offY + (e.clientY - panDrag.sy);
+  drawGrid(); render();
+}, true);
+
+function endPan(e) {
+  if (!panDrag || e.pointerId !== panDrag.id) return;
+  e.stopPropagation();
+  try { drawCanvas.releasePointerCapture(e.pointerId); } catch (err) { /* 既に外れていることがある */ }
+  panDrag = null;
+  掴む形にする();
+}
+document.addEventListener("pointerup", endPan, true);
+document.addEventListener("pointercancel", endPan, true);
+// 中ボタンの「自動スクロール」が始まると図面が動かせなくなるので止める
+drawCanvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+
+// 文字を打っている最中はショートカットを効かせない
+function 入力中か(el) {
+  if (!el) return false;
+  const t = (el.tagName || "").toLowerCase();
+  return t === "input" || t === "textarea" || t === "select" || el.isContentEditable;
+}
+function モーダルが開いているか() {
+  return !!document.querySelector(".modal-overlay.show");
+}
+
+document.addEventListener("keydown", (e) => {
+  if (入力中か(e.target)) return;
+
+  if (e.code === "Space") {                     // 押している間だけ「つかむ」
+    if (!spaceHeld) { spaceHeld = true; 掴む形にする(); }
+    e.preventDefault();                         // ページのスクロールを止める
+    return;
+  }
+
+  const ctrl = e.ctrlKey || e.metaKey;
+  const k = (e.key || "").toLowerCase();
+  if (ctrl && k === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+  if (ctrl && k === "y") { e.preventDefault(); redo(); return; }
+  if (ctrl || e.altKey) return;
+
+  // モーダルが開いているときは、その中の操作を邪魔しない
+  if (モーダルが開いているか()) return;
+
+  if (e.key === "Escape") {
+    if (drawingPoints.length > 0) { cancelDrawing(); e.preventDefault(); }
+    else if (editingRoom) { editingRoom = null; render(); e.preventDefault(); }
+  } else if (e.key === "Enter") {
+    if (drawingPoints.length >= 3) { e.preventDefault(); finishRoom(); }
+  } else if (e.key === "Backspace") {
+    if (drawingPoints.length > 0) { e.preventDefault(); undoLastPoint(); }
+  } else if (e.key === "+" || e.key === "=") {
+    e.preventDefault(); zoomStep(1.2);
+  } else if (e.key === "-" || e.key === "_") {
+    e.preventDefault(); zoomStep(1 / 1.2);
+  } else if (e.key === "0") {
+    e.preventDefault(); fitAllRooms();
+  }
+});
+
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space") { spaceHeld = false; 掴む形にする(); }
+});
+// 画面から離れている間にキーを離すと押しっぱなし扱いのまま戻ってくるため、戻ったら解除する
+window.addEventListener("blur", () => { spaceHeld = false; 掴む形にする(); });
+
 function cancelDrawing() {
   drawingPoints = []; previewPoint = null; isPointerDrawing = false; dragAxis = null; lastRawPos = null;
   $("drawingBar").classList.remove("show");
@@ -3602,6 +3948,23 @@ function drawBuildingOutline(octx, w, h, scale, pad) {
   }
   dctx2.globalCompositeOperation = "destination-out";
   dctx2.drawImage(off, 0, 0);
+  // 外周の輪にも、開口部(窓・戸)の穴を開ける。ここを開けないと、部屋側の壁線を
+  // 切っても保存画像では太い外壁が開口をふさいだままになる。
+  // 内壁の建具は輪の無い場所なので対象外にする。無害に見えて、外壁のすぐ内側を
+  // 走る間仕切りの建具だと、その穴が外壁の輪まで届いて余計に削ってしまう。
+  // 消去の幅は、輪の厚み(strokeW)の内外ぶん = (strokeW + 余裕) * 2。
+  // strokeW はすでに保存先の単位なので、ここで scale を掛け直さないこと。
+  dctx2.lineCap = "butt";     // 丸めると開口の端より先まで消える
+  dctx2.strokeStyle = "#000";
+  dctx2.lineWidth = (strokeW + 1.5) * 2;
+  state.rooms.forEach((room) => (room.doors || []).forEach((d) => {
+    const g = doorSegment(room, d);
+    if (!g || !isOnBuildingEdge(g)) return;
+    dctx2.beginPath();
+    dctx2.moveTo(g.a.x * scale + pad, g.a.y * scale + pad);
+    dctx2.lineTo(g.b.x * scale + pad, g.b.y * scale + pad);
+    dctx2.stroke();
+  }));
   dctx2.globalCompositeOperation = "source-over";
 
   octx.drawImage(dilated, 0, 0);
@@ -4164,7 +4527,12 @@ let firstUseHintShown = false;
 function showFirstUseHintOnce() {
   if (firstUseHintShown) return;
   firstUseHintShown = true;
-  showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます", true);
+  // 指で触る機械かマウスかで、伝えるべき操作が違う。パソコンで「指でなぞって」と
+  // 出しても意味が分からないうえ、ホイールやスペースキーに気づけない。
+  const 指の機械 = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  showHint(指の機械
+    ? "何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます"
+    : "何もない場所をドラッグすると部屋を描けます。ホイールで拡大、スペースキーか中ボタンを押しながらドラッグで図面を動かせます", true);
 }
 
 $("btnProjects").addEventListener("click", () => {
