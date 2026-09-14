@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-1">
+<meta name="app-version" content="2026-09-14-2">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -356,6 +356,7 @@
     <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span id="colorSchemeLabel">配色:カラー</span></button>
     <button class="tool" id="btnExport"><span class="em">🖼️</span>画像で保存</button>
     <button class="tool" id="btnExportTransparent"><span class="em">🎞️</span>透過で保存</button>
+    <button class="tool" id="btnCopyTransparent" style="display:none" title="透過の画像をコピーして、Excel などに Ctrl+V で貼る"><span class="em">📋</span>透過でコピー</button>
     <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span>全階まとめて保存</button>
     <button class="tool" id="btnExportDrive"><span class="em">☁️</span>ドライブに保存</button>
     <button class="tool" id="btnSave"><span class="em">💾</span>この階を保存</button>
@@ -1157,6 +1158,8 @@ let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の�
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
 let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
+let 壁ドラッグ = null; // 壁の長さの数字をつかんで、壁を平行に動かしている間の状態(パソコン)
+let 選んだ壁 = null;   // {room, edge} 選んだ部屋の中で、矢印キーを効かせる壁(パソコン)
 
 let history = [], future = [];
 function snapshot() {
@@ -1190,7 +1193,10 @@ function redo() {
 function 選択を引き継ぐ(前の部屋たち) {
   if (!editingRoom) return;
   const i = 前の部屋たち.indexOf(editingRoom);
+  const 前の選択 = editingRoom;
   editingRoom = (i >= 0 && 前の部屋たち.length === state.rooms.length) ? state.rooms[i] : null;
+  // 選んだ壁も同じ部屋へ付け替える(壁の数が変わっていれば 選んでいる壁() が外す)
+  if (選んだ壁) 選んだ壁 = (editingRoom && 選んだ壁.room === 前の選択) ? { room: editingRoom, edge: 選んだ壁.edge } : null;
 }
 function updateUndoRedoButtons() {
   $("btnUndo").disabled = history.length === 0;
@@ -1368,7 +1374,12 @@ function render() {
   });
   for (const room of state.rooms) drawRoomDecor(room);
   // 選択中の青い頂点ハンドルと設備のつまみ。触るためのものなので書き出しでは描かない
-  if (!isExportRender && currentTool === "wall" && editingRoom) { drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom); }
+  if (!isExportRender && currentTool === "wall" && editingRoom) {
+    // 壁の長さ(mm)とそのつまみ。パソコンだけ。★角・設備のつまみより先に描く(重なったら、上に見える
+    //   つまみのほうが掴める。当たり判定の順番と揃える)
+    if (マウスで触っているか()) 壁の長さを描く(editingRoom);
+    drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom);
+  }
 
   // 描きかけの点線と点。まだ部屋になっていないので書き出しには入れない
   if (!isExportRender && drawingPoints.length > 0) {
@@ -3058,7 +3069,7 @@ function tryRoomSelectionTap(sx, sy) {
     render();
     // ★マウスのときは、選んだ部屋に効くキーを添える(知らなければ使われない)。
     const キーの案内 = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
-      ? "" : "（Delete で削除、矢印キーで移動）";
+      ? "" : "（壁の長さの数字をドラッグすると壁が動きます。Delete で削除、矢印キーで移動）";
     showHint((roomHasFixture(room)
       ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを調整できます"
       : "頂点をドラッグで形を調整できます。もう一度タップすると編集メニューが開きます") + キーの案内);
@@ -3103,6 +3114,8 @@ function handleSingleTouchStart(sx, sy) {
   }
   // 描く/編集ツール: 何も描いていない状態でのタップは、まず「既存部屋の選択」を試す。
   // 部屋の中をタップしたら選択、何もない場所なら新規描画に進む。
+  // ★壁の長さのつまみは、建具の当たり判定より先に見る(外開きの戸の弧がつまみに重なることがある)
+  if (壁のつまみで始める(sx, sy)) return;
   const isFreshTap = drawingPoints.length === 0;
   // 間取りを見返している最中(既定の描く/編集タブ)に既存の建具を軽くタップすると、
   // 建具の編集ではなく新規の壁描画が誤って始まってしまう不具合があった(実機で
@@ -3168,6 +3181,9 @@ drawCanvas.addEventListener("pointermove", (e) => {
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
     const g = snapToExistingVertex(screenToGridSnapped(sx, sy), vertexDrag.room);
     vertexDrag.room.points[vertexDrag.index] = g;
+    // ★動かしている間も畳数を出し直す。以前は指を離すまで変わらず、寸法合わせで
+    //   「いま何畳か」を見ながら動かせなかった。手で直した畳数は触らない(離したときと同じ)。
+    if (!vertexDrag.room.tatamiManual) vertexDrag.room.tatami = masuToTatami(polygonAreaMasu(vertexDrag.room.points));
     render();
     return;
   }
@@ -3354,6 +3370,13 @@ function commitPendingVertexOnRelease(sx, sy) {
 // タップ後すぐ離した場合(pendingSingleTouchの早期return)・通常のドラッグ完了
 // の両方から呼べるよう一本化してある。該当するドラッグが無ければfalseを返す。
 function finalizeActiveDrags() {
+  if (壁ドラッグ) {
+    const d = 壁ドラッグ;
+    壁ドラッグ = null;
+    render();
+    if (d.積んだ) { autoSave(); 壁を動かしたあとの知らせ(d, true); }
+    return true;
+  }
   if (vertexDrag) {
     const room = vertexDrag.room;
     // 手で直した広さは上書きしない(実測して入れた値が消えてしまうため)。
@@ -3434,6 +3457,10 @@ drawCanvas.addEventListener("pointercancel", endPointer);
      Delete / Backspace      … 選んだ部屋を消す(描いていないとき。Ctrl+Z で戻せる)
      矢印キー                … 選んだ部屋を動かす(点を置く細かさ1つぶん／Shift で1マス)
                                何も選んでいなければ図面を動かす(1マス／Shift で5マス)
+   2026-09-14(2回目)に足したもの:
+     部屋を選ぶと各壁の外側に長さ(mm)が出る。縦・横の壁の数字をドラッグ … 壁を平行に動かす
+     数字をクリックして矢印キー … その壁を動かす(細かさ1つぶん／Shift で1マス)。Esc で壁の選択だけ外す
+     📋透過でコピー          … 透過の画像をクリップボードへ。Excel に Ctrl+V で貼る
 
    ★既存の指の操作(pointerdown〜)には一切手を入れていない。パンだけは document の
      capture 段で先に横取りし、canvas 側のなぞり描きへ流さないようにしている
@@ -3568,6 +3595,370 @@ function 右クリックした(sx, sy) {
   if (editingRoom) { editingRoom = null; render(); }
 }
 
+/* ---------------- 壁の長さと、壁をつかんで動かす(パソコン) ----------------
+   2026-09-14、白井さん「清書でいちばん時間がかかるのは寸法合わせ」。
+   それまで壁の長さはどこにも出ておらず(方眼を数えるしかない)、壁を1本ずらすにも
+   角を2つ別々に動かしていた。そこで、部屋を選ぶと各壁の外側に長さ(mm)を出し、
+   縦・横の壁はその数字をつかんで平行に動かせるようにした。選んだ壁は矢印キーでも動く。
+
+   ★つまみを壁の真ん中に置かないのは、ドアがたいてい壁の真ん中にあり、クリックは
+     建具の当たり判定を先に見るから(取られて掴めない)。外側の数字をつまみにした。
+   ★マウスのときだけ。指の操作(なぞり描き・建具のドラッグ)と取り合わせない。
+   ★決めたこと(Codex と相談、白井さん「知らせて通す方で」):
+     ・部屋の形が壊れる(壁が交差する・長さ0になる)位置へは動かさない。ここだけは止める
+     ・建具は、長さが変わる壁の**動かない側の端からの距離**を保つ(割合のままだと、
+       寸法を直しただけでドアがずれる)。壁に収まらなければ寄せて、知らせる
+     ・設備が部屋からはみ出したら知らせる。止めない(Ctrl+Z で戻せる)
+     ・手で直した畳数(tatamiManual)は消さない
+     ・1回のドラッグ／ひと続きの矢印で「戻す」1回。実際に動いたときだけ履歴を積む
+     ・頂点の数と順番は変えない(建具の edge が別の壁を指さないように)
+     ・毎回「動かし始めの形」から作り直す(行ったり来たりしても建具がずれていかない)
+*/
+function マウスで触っているか() {
+  if (最後のポインタ === "touch") return false;
+  return !(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+}
+
+function 横の壁か(pts, i) {
+  const p = pts[i], q = pts[(i + 1) % pts.length];
+  return Math.abs(p.gy - q.gy) < 1e-9;
+}
+function 縦か横の壁か(pts, i) {
+  const p = pts[i], q = pts[(i + 1) % pts.length];
+  if (!p || !q) return false;
+  const 横 = Math.abs(p.gy - q.gy) < 1e-9, 縦 = Math.abs(p.gx - q.gx) < 1e-9;
+  return 横 !== 縦;   // 両方なら長さ0の壁
+}
+
+const 壁の文字 = "600 12px system-ui, -apple-system, 'Segoe UI', sans-serif";
+// 壁 i の長さの数字を、どこにどの大きさで出すか。短すぎて出さない壁は null。
+function 壁のつまみの形(room, i) {
+  const pts = room.points, n = pts.length;
+  const p = pts[i], q = pts[(i + 1) % n];
+  const 長さ = Math.hypot(q.gx - p.gx, q.gy - p.gy);
+  if (!(長さ > 1e-9)) return null;
+  const s1 = gridToScreen(p.gx, p.gy), s2 = gridToScreen(q.gx, q.gy);
+  const L = Math.hypot(s2.x - s1.x, s2.y - s1.y);
+  if (L < 40) return null;   // 角のつまみ(半径20の当たり)と重なる。拡大すれば出る
+  const ux = (s2.x - s1.x) / L, uy = (s2.y - s1.y) / L;
+  const sg = roomWindingSign(room);
+  const ox = uy * sg, oy = -ux * sg;   // 部屋の外へ向く向き(doorSegment の「室内側」の逆)
+  const 文字 = Math.round(長さ * 910).toLocaleString("ja-JP");
+  dctx.save(); dctx.font = 壁の文字;
+  const w = dctx.measureText(文字).width + 14;
+  dctx.restore();
+  const h = 20;
+  let 離す = 8 + Math.abs(ox) * w / 2 + Math.abs(oy) * h / 2;
+  let cx = 0, cy = 0;
+  // ★角や設備のつまみと重なると数字が隠れて読めない(狭いトイレでは設備の回転つまみが壁の外まで出る)。
+  //   重ならない所まで離す。当たり判定もこの位置を使うので、見た目と掴める場所は揃ったまま。
+  for (let k = 0; k < 8; k++) {
+    cx = (s1.x + s2.x) / 2 + ox * 離す; cy = (s1.y + s2.y) / 2 + oy * 離す;
+    if (!数字がつまみと重なるか(room, cx, cy, w, h)) break;
+    離す += 10;
+  }
+  return {
+    文字, w, h, s1, s2, cx, cy,
+    つまめる: 縦か横の壁か(pts, i),
+  };
+}
+// 数字の四角(中心 cx,cy・幅 w・高さ h)が、角のつまみ(当たり半径20)や設備のつまみ(22)にかかるか
+function 数字がつまみと重なるか(room, cx, cy, w, h) {
+  const 丸 = room.points.map((p) => ({ ...gridToScreen(p.gx, p.gy), r: 20 }));
+  if (roomHasFixture(room)) {
+    const f = fixtureGridPos(room);
+    丸.push({ ...gridToScreen(f.gx, f.gy), r: FIXTURE_HIT_RADIUS_PX });
+    丸.push({ ...fixtureRotateHandlePos(room), r: FIXTURE_HIT_RADIUS_PX });
+  }
+  return 丸.some((c) => {
+    const nx = Math.max(cx - w / 2, Math.min(c.x, cx + w / 2)), ny = Math.max(cy - h / 2, Math.min(c.y, cy + h / 2));
+    return Math.hypot(c.x - nx, c.y - ny) < c.r;
+  });
+}
+function 角丸の四角(x, y, w, h, r) {
+  dctx.beginPath();
+  dctx.moveTo(x + r, y); dctx.lineTo(x + w - r, y); dctx.arcTo(x + w, y, x + w, y + r, r);
+  dctx.lineTo(x + w, y + h - r); dctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  dctx.lineTo(x + r, y + h); dctx.arcTo(x, y + h, x, y + h - r, r);
+  dctx.lineTo(x, y + r); dctx.arcTo(x, y, x + r, y, r);
+  dctx.closePath();
+}
+function 壁の長さを描く(room) {
+  const 選 = (選んだ壁 && 選んだ壁.room === room) ? 選んだ壁.edge : -1;
+  dctx.save();
+  dctx.font = 壁の文字; dctx.textAlign = "center"; dctx.textBaseline = "middle";
+  for (let i = 0; i < room.points.length; i++) {
+    const f = 壁のつまみの形(room, i);
+    if (!f) continue;
+    if (i === 選) {   // 選んだ壁を太い青で示す(矢印キーがどの壁に効くか分かるように)
+      dctx.beginPath(); dctx.moveTo(f.s1.x, f.s1.y); dctx.lineTo(f.s2.x, f.s2.y);
+      dctx.strokeStyle = "rgba(47,111,237,.55)"; dctx.lineWidth = 7; dctx.lineCap = "round"; dctx.stroke();
+    }
+    if (f.つまめる) {
+      角丸の四角(f.cx - f.w / 2, f.cy - f.h / 2, f.w, f.h, 10);
+      dctx.fillStyle = i === 選 ? "#2f6fed" : "#ffffff"; dctx.fill();
+      dctx.lineWidth = 1.5; dctx.strokeStyle = "#2f6fed"; dctx.stroke();
+      dctx.fillStyle = i === 選 ? "#ffffff" : "#1c2733";
+      dctx.fillText(f.文字, f.cx, f.cy + 0.5);
+    } else {
+      // 斜めの壁は長さだけ出す(つかんで動かせるのは縦・横の壁だけ)
+      dctx.lineWidth = 3; dctx.strokeStyle = "rgba(255,255,255,.9)"; dctx.strokeText(f.文字, f.cx, f.cy);
+      dctx.fillStyle = "#5c6b78"; dctx.fillText(f.文字, f.cx, f.cy);
+    }
+  }
+  dctx.restore();
+}
+function ほかのつまみに当たるか(room, sx, sy) {
+  return hitTestVertexHandle(room, sx, sy) !== null
+    || hitTestFixtureRotateHandle(room, sx, sy) || hitTestFixtureHandle(room, sx, sy);
+}
+function 壁のつまみに当たるか(room, sx, sy) {
+  for (let i = room.points.length - 1; i >= 0; i--) {
+    const f = 壁のつまみの形(room, i);
+    if (!f || !f.つまめる) continue;
+    if (Math.abs(sx - f.cx) <= f.w / 2 + 4 && Math.abs(sy - f.cy) <= f.h / 2 + 4) return i;
+  }
+  return null;
+}
+
+// 部屋の形として成り立つか(壁が長さ0／隣の壁と折り返して重なる／離れた壁どうしが交わる／面積0 はだめ)
+function 形が保てるか(pts) {
+  const n = pts.length;
+  if (n < 3) return false;
+  const EPS = 1e-9;
+  const 外積 = (a, b, c) => (b.gx - a.gx) * (c.gy - a.gy) - (b.gy - a.gy) * (c.gx - a.gx);
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n], c = pts[(i + 2) % n];
+    if (Math.hypot(b.gx - a.gx, b.gy - a.gy) < 1e-6) return false;
+    const 内積 = (b.gx - a.gx) * (c.gx - b.gx) + (b.gy - a.gy) * (c.gy - b.gy);
+    if (Math.abs(外積(a, b, c)) < EPS && 内積 < 0) return false;
+  }
+  const 載る = (a, b, p) => Math.min(a.gx, b.gx) - EPS <= p.gx && p.gx <= Math.max(a.gx, b.gx) + EPS
+    && Math.min(a.gy, b.gy) - EPS <= p.gy && p.gy <= Math.max(a.gy, b.gy) + EPS;
+  const 交わる = (p1, p2, p3, p4) => {
+    const d1 = 外積(p3, p4, p1), d2 = 外積(p3, p4, p2), d3 = 外積(p1, p2, p3), d4 = 外積(p1, p2, p4);
+    if (((d1 > EPS && d2 < -EPS) || (d1 < -EPS && d2 > EPS)) && ((d3 > EPS && d4 < -EPS) || (d3 < -EPS && d4 > EPS))) return true;
+    return (Math.abs(d1) <= EPS && 載る(p3, p4, p1)) || (Math.abs(d2) <= EPS && 載る(p3, p4, p2))
+      || (Math.abs(d3) <= EPS && 載る(p1, p2, p3)) || (Math.abs(d4) <= EPS && 載る(p1, p2, p4));
+  };
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;   // 隣り合う壁は角で接していてよい
+      if (交わる(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n])) return false;
+    }
+  }
+  return polygonAreaMasu(pts) > 1e-6;
+}
+
+// 頂点の回り順(roomWindingSign と同じ式。部屋を渡さず点の並びで見る)
+function 回り順(pts) {
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; s += a.gx * b.gy - b.gx * a.gy; }
+  return s >= 0 ? 1 : -1;
+}
+function 形の控え(room) {
+  return { points: room.points.map((p) => ({ gx: p.gx, gy: p.gy })), doors: (room.doors || []).map((d) => ({ ...d })) };
+}
+
+// 控えの形から、壁 edge を座標 v へ平行に動かした形を作る。形が壊れるなら null。
+function 壁を置いた形(基準, edge, v, 元から壊れている) {
+  const n = 基準.points.length, ia = edge, ib = (edge + 1) % n;
+  const pts = 基準.points.map((p) => ({ gx: p.gx, gy: p.gy }));
+  if (横の壁か(基準.points, edge)) { pts[ia].gy = v; pts[ib].gy = v; } else { pts[ia].gx = v; pts[ib].gx = v; }
+  // ★もともと形が崩れている部屋(古いデータ)まで一切動かせなくなると困るので、そのときは調べない
+  if (!元から壊れている && !形が保てるか(pts)) return null;
+  // ★反対側の壁を一気に飛び越えると、長さ0の位置を踏まずに**裏返った部屋**ができる(交差はしない)。
+  //   建具の内外や設備の向きが全部ひっくり返るので、回り順が変わる位置へは動かさない。
+  if (!元から壊れている && 回り順(pts) !== 回り順(基準.points)) return null;
+  const 長さ = (ps, i) => { const p = ps[i], q = ps[(i + 1) % n]; return Math.hypot(q.gx - p.gx, q.gy - p.gy); };
+  const 前 = (ia - 1 + n) % n, 次 = ib;
+  let 寄せた = 0;
+  const doors = 基準.doors.map((d0) => {
+    const d = { ...d0 };
+    if (d.edge !== 前 && d.edge !== 次) return d;   // 動かした壁そのものは長さが変わらない
+    const 旧 = 長さ(基準.points, d.edge), 新 = 長さ(pts, d.edge);
+    if (!(旧 > 1e-9) || !(新 > 1e-9)) return d;
+    const r0 = Number.isFinite(d.ratio) ? d.ratio : 0.5;
+    // 前の壁は始点が、次の壁は終点が動かない。動かない端から建具の中心までの距離を保つ
+    const t = d.edge === 前 ? r0 * 旧 : 新 - (1 - r0) * 旧;
+    const 幅 = (Number.isFinite(d.widthMasu) && d.widthMasu > 0) ? d.widthMasu : defaultWidthMasuForType(d.type);
+    const 半 = Math.min(幅, 新) / 2;
+    const 収めた = Math.min(Math.max(t, 半), 新 - 半);
+    const 半0 = Math.min(幅, 旧) / 2, t0 = r0 * 旧;
+    const 元は収まっていた = 幅 <= 旧 + 1e-6 && t0 >= 半0 - 1e-6 && t0 <= 旧 - 半0 + 1e-6;
+    if (元は収まっていた && (Math.abs(収めた - t) > 1e-6 || 幅 > 新 + 1e-6)) 寄せた++;
+    d.ratio = 収めた / 新;
+    return d;
+  });
+  return { points: pts, doors, 寄せた };
+}
+
+function 形を当てはめる(room, 形) {
+  room.points = 形.points.map((p) => ({ gx: p.gx, gy: p.gy }));
+  room.doors = 形.doors.map((d) => ({ ...d }));
+  if (!room.tatamiManual) room.tatami = masuToTatami(polygonAreaMasu(room.points));
+}
+
+// 設備の絵(大きさと向きを含む)が部屋からはみ出しているか。
+// ★絵は部屋の形で切り抜いて描くので、はみ出した部分は黙って消えて見える。
+function 設備がはみ出しているか(room) {
+  if (!SHOW_ROOM_FIXTURES || !FIXTURE_ROOM_KEYS.includes(room.typeKey)) return false;
+  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  if (!size || room.points.length < 3) return false;
+  const c = fixtureGridPos(room), k = fixtureFitRatio(room);
+  const rad = (fixtureRotation(room) * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const hw = ((size.w * k) / 2) * 0.95, hd = ((size.d * k) / 2) * 0.95;   // 壁にぴったり付けた設備を数えない
+  return [[0, 0], [-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].some(([x, y]) =>
+    !isPointInPolygonGrid(c.gx + x * cos - y * sin, c.gy + x * sin + y * cos, room.points));
+}
+
+function 履歴に積む(json) {
+  history.push(json);
+  if (history.length > 50) history.shift();
+  future = [];
+  updateUndoRedoButtons();
+}
+
+// ほかの部屋の角と同じ高さ(横の壁)・同じ位置(縦の壁)が近ければ、そこへ揃える
+function 揃う値に寄せる(v生, v刻み, 横, 自分) {
+  let best = null, bestD = Math.min(vertexSnapDist(), 0.45 / snapDenom);
+  for (const r of state.rooms) {
+    if (r === 自分) continue;
+    for (const p of r.points) {
+      const c = 横 ? p.gy : p.gx;
+      const d = Math.abs(c - v生);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+  }
+  return best != null ? best : v刻み;
+}
+
+function 壁を動かす準備(room, edge) {
+  const 基準 = 形の控え(room);
+  return {
+    room, edge, 基準,
+    値: 横の壁か(基準.points, edge) ? 基準.points[edge].gy : 基準.points[edge].gx,
+    始めのJSON: JSON.stringify(state.rooms),
+    積んだ: false,
+    元から壊れている: !形が保てるか(基準.points),
+    始めの設備はみ出し: 設備がはみ出しているか(room),
+    寄せた: 0,
+    壊れる知らせ: false,
+  };
+}
+// 準備した状態 d の壁を座標 v へ。動かせたら true(同じ位置でも true)、形が壊れるなら false。
+function 壁を動かしてみる(d, v) {
+  const 形 = 壁を置いた形(d.基準, d.edge, v, d.元から壊れている);
+  if (!形) {
+    if (!d.壊れる知らせ) { showHint("これ以上動かすと部屋の形が壊れるので、ここで止めています"); d.壊れる知らせ = true; }
+    return false;
+  }
+  const 同じ = 形.points.every((p, i) => d.room.points[i] && p.gx === d.room.points[i].gx && p.gy === d.room.points[i].gy);
+  if (同じ) return true;
+  if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+  形を当てはめる(d.room, 形);
+  d.値 = v; d.寄せた = 形.寄せた;
+  return true;
+}
+// 止めた分も = ドラッグを離したとき。★ドラッグ中に出した「止めています」は、離したときの
+//   知らせ(建具を寄せた等)で上書きされて消えるので、ここにまとめて残す。
+function 壁を動かしたあとの知らせ(d, 止めた分も) {
+  const 知らせ = [];
+  if (止めた分も && d.壊れる知らせ) 知らせ.push("部屋の形が壊れる手前で止めました");
+  if (d.寄せた > 0) 知らせ.push(`建具${d.寄せた}か所が壁に収まらないので寄せました`);
+  if (!d.始めの設備はみ出し && 設備がはみ出しているか(d.room)) 知らせ.push(`${roomType(d.room).label}の設備の絵が部屋からはみ出しています`);
+  if (知らせ.length) showHint(知らせ.join("。") + "（Ctrl+Z で戻せます）", true);
+}
+
+/** 選んでいる壁を返す。★戻したあと・部屋を替えたあと・斜めになった壁なら外して null。 */
+function 選んでいる壁() {
+  const room = 選んでいる部屋();
+  if (!選んだ壁 || !room || 選んだ壁.room !== room || !縦か横の壁か(room.points, 選んだ壁.edge)) {
+    選んだ壁 = null;
+    return null;
+  }
+  return 選んだ壁;
+}
+
+// クリックの入口(handleSingleTouchStart の先頭)。壁のつまみなら掴んで true。
+function 壁のつまみで始める(sx, sy) {
+  if (currentTool !== "wall" || drawingPoints.length > 0 || !マウスで触っているか()) return false;
+  const room = 選んでいる部屋();
+  // 角・設備のつまみを先に(短い壁では数字と角が近い。狭い部屋では設備の回転つまみが壁の外まで伸びる)
+  if (!room || ほかのつまみに当たるか(room, sx, sy)) { 選んだ壁 = null; return false; }
+  const edge = 壁のつまみに当たるか(room, sx, sy);
+  if (edge === null) { 選んだ壁 = null; return false; }
+  選んだ壁 = { room, edge };
+  壁ドラッグ = 壁を動かす準備(room, edge);
+  壁ドラッグ.始めの指 = screenToGridRaw(sx, sy);
+  壁ドラッグ.始めの画面 = { x: sx, y: sy };
+  壁ドラッグ.動き出した = false;
+  壁の矢印 = null;
+  render();
+  return true;
+}
+
+drawCanvas.addEventListener("pointermove", (e) => {
+  if (!壁ドラッグ || pointers.size !== 1 || !pointers.has(e.pointerId)) return;
+  const rect = drawCanvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const d = 壁ドラッグ;
+  // ★クリックしただけの手ぶれで動かさない(細かさより細かい位置にある壁は、少しでも動くと方眼へ吸い付く)
+  if (!d.動き出した) {
+    if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 4) return;
+    d.動き出した = true;
+  }
+  const 横 = 横の壁か(d.基準.points, d.edge);
+  const 今 = screenToGridRaw(sx, sy);
+  const 始め = 横 ? d.基準.points[d.edge].gy : d.基準.points[d.edge].gx;
+  // ★数字は壁から離れた所にあるので、指の位置ではなく「動かした量」だけ壁を動かす(掴んだ瞬間に跳ねない)
+  const v生 = 始め + (横 ? 今.gy - d.始めの指.gy : 今.gx - d.始めの指.gx);
+  const v = 揃う値に寄せる(v生, 刻みに戻す(snapCoord(v生)), 横, d.room);
+  if (v === d.値) return;
+  if (壁を動かしてみる(d, v)) render();
+});
+
+// カーソルを数字に乗せたら、動かせる向きの形にする(知らなければ気づけない)
+drawCanvas.addEventListener("pointermove", (e) => {
+  if (e.pointerType !== "mouse" || panDrag || spaceHeld) return;
+  let 形 = "";
+  const room = 壁ドラッグ ? 壁ドラッグ.room : editingRoom;
+  if (room && currentTool === "wall" && drawingPoints.length === 0 && (壁ドラッグ || pointers.size === 0)) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const i = 壁ドラッグ ? 壁ドラッグ.edge
+      : (ほかのつまみに当たるか(room, sx, sy) ? null : 壁のつまみに当たるか(room, sx, sy));
+    if (i !== null && room.points[i]) 形 = 横の壁か(room.points, i) ? "ns-resize" : "ew-resize";
+  }
+  if (drawCanvas.style.cursor !== 形) drawCanvas.style.cursor = 形;
+});
+
+// 選んだ壁を矢印キーで(細かさ1つぶん／Shift で1マス)。押しっぱなしは「戻す」1回にまとめる。
+let 壁の矢印 = null;
+function 選んだ壁を矢印で動かす(dx, dy, 大きく) {
+  const w = 選んでいる壁();
+  if (!w) return;
+  const 横 = 横の壁か(w.room.points, w.edge);
+  const 量 = 横 ? dy : dx;
+  if (!量) {
+    showHint((横 ? "この壁は上下にだけ動かせます" : "この壁は左右にだけ動かせます") + "（Esc で壁の選択を外すと、部屋ごと動かせます）");
+    return;
+  }
+  const 続き = 壁の矢印 && 壁の矢印.room === w.room && 壁の矢印.edge === w.edge
+    && 壁の矢印.履歴の長さ === history.length && 壁の矢印.最後の形 === JSON.stringify(w.room.points);
+  if (!続き) 壁の矢印 = 壁を動かす準備(w.room, w.edge);
+  const d = 壁の矢印;
+  clearTimeout(d.timer);
+  d.timer = setTimeout(() => { if (壁の矢印 === d) 壁の矢印 = null; }, 800);
+  const 歩幅 = 大きく ? 1 : 1 / snapDenom;
+  d.壊れる知らせ = false;
+  if (!壁を動かしてみる(d, 刻みに戻す(d.値 + 量 * 歩幅))) return;
+  d.履歴の長さ = history.length;
+  d.最後の形 = JSON.stringify(w.room.points);
+  render(); autoSave();
+  壁を動かしたあとの知らせ(d);
+}
+
 /* ---------------- 選んだ部屋を消す・動かす(キーボード) ---------------- */
 
 /** 選んでいる部屋を返す。★配列に無い(戻したあとの幽霊)なら選択を外して null。 */
@@ -3663,6 +4054,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "Escape") {
     if (drawingPoints.length > 0) { cancelDrawing(); e.preventDefault(); }
+    else if (選んでいる壁()) { 選んだ壁 = null; render(); e.preventDefault(); }   // まず壁の選択だけ外す
     else if (editingRoom) { editingRoom = null; render(); e.preventDefault(); }
   } else if (e.key === "Enter") {
     if (drawingPoints.length >= 3) { e.preventDefault(); finishRoom(); }
@@ -3680,7 +4072,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     const dx = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
     const dy = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
-    if (選んでいる部屋()) 選んだ部屋を動かす(dx, dy, e.shiftKey);
+    if (選んでいる壁()) 選んだ壁を矢印で動かす(dx, dy, e.shiftKey);
+    else if (選んでいる部屋()) 選んだ部屋を動かす(dx, dy, e.shiftKey);
     else 図面を矢印で動かす(dx, dy, e.shiftKey);
   } else if (e.key === "+" || e.key === "=") {
     e.preventDefault(); zoomStep(1.2);
@@ -4309,7 +4702,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; doorDrag = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
@@ -4631,6 +5024,33 @@ $("btnExportTransparent").addEventListener("click", () => {
   } catch (err) {
     console.error(err);
     showHint(`画像の書き出しに失敗しました: ${err && err.message ? err.message : err}`, true);
+  }
+});
+/* 透過でコピー(パソコン)… 2026-09-14。マイソクは Excel で作り、間取り図は透過で重ねる。
+   「透過で保存 → Excel で挿入 → ファイルを探す」を「コピー → Ctrl+V」にする。
+   ★Chrome からコピーすると Windows のクリップボードに PNG 形式でも載り、Excel に貼っても
+     透過が残ることを実測した(黄色いセルの上に貼り、xlsx の中の画像が RGBA・内側が透明のまま)。
+   ★指の機械では出さない(スマホで画像をコピーしても貼る先が無く、ボタンが増えて窮屈になる)。 */
+if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem
+    && !(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) {
+  $("btnCopyTransparent").style.display = "";
+}
+$("btnCopyTransparent").addEventListener("click", async () => {
+  if (state.rooms.length === 0) { showHint("この階にはまだ部屋がありません"); return; }
+  try {
+    const out = buildExportCanvas(2, true);
+    const 画像 = new Promise((ok, ng) => out.toBlob((b) => (b ? ok(b) : ng(new Error("画像を作れませんでした"))), "image/png"));
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": 画像 })]);
+    } catch (err) {
+      // 古いブラウザは ClipboardItem に Promise を渡せない。出来上がりを待って渡し直す
+      if (!(err instanceof TypeError)) throw err;
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": await 画像 })]);
+    }
+    showHint("透過の画像をコピーしました。Excel などに Ctrl+V で貼れます", true);
+  } catch (err) {
+    console.error(err);
+    showHint(`コピーできませんでした（${err && err.message ? err.message : err}）。「透過で保存」を使ってください`, true);
   }
 });
 $("btnExportAllFloors").addEventListener("click", () => {
