@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-6">
+<meta name="app-version" content="2026-09-14-7">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -441,6 +441,10 @@
     <div class="field-row" id="stairCornerRow" style="display:none;">
       <label>曲がり角</label>
       <button class="iconbtn" id="btnStairCorner">踊り場</button>
+    </div>
+    <div class="field-row" id="fixtureSizeRow" style="display:none;">
+      <label>設備の大きさ<br><small id="fixtureSizeText">幅 − × 奥行き − mm</small></label>
+      <button class="iconbtn" id="btnFixtureReset">自動に戻す</button>
     </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteRoomInModal" style="display:none;">この部屋を削除</button>
@@ -1172,6 +1176,7 @@ let lastDoorFlip = initialDoorPref.flip;
 let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の状態
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
+let 設備の大きさドラッグ = null; // 設備の枠のつまみ(角・辺)を引っ張って大きさを変えている間の状態
 let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
 let 壁ドラッグ = null; // 壁の長さの数字をつかんで、壁を平行に動かしている間の状態(パソコン)
 let 選んだ壁 = null;   // {room, edge} 選んだ部屋の中で、矢印キーを効かせる壁(パソコン)
@@ -1456,13 +1461,24 @@ function drawHatchFill(room) {
   dctx.restore();
 }
 
-function fixtureScaleFactor(room) {
-  // 設備は建具(widthMasu)と同じく実寸で描く。1マス=910mm を基準にし、
-  // 部屋に収まらないときだけ縮める。
-  // ★以前は部屋の面積に連動して0.55〜1.6倍していたため、広い浴室ほど浴槽が
-  //   大きくなるといった、実物と関係のない絵になっていた。
-  return fixtureFitRatio(room);
+// 設備の、いま描いている大きさ(幅 w・奥行き d、マス)。
+// 手で決めた大きさ(room.fixtureSize)があればそのまま。部屋に入らなくても縮めない(はみ出したら知らせる)。
+// 無ければ実寸(FIXTURE_SIZE_MASU)を、部屋に収まらないときだけ縮める(これまでどおり)。
+// ★以前は部屋の面積に連動して0.55〜1.6倍していたため、広い浴室ほど浴槽が
+//   大きくなるといった、実物と関係のない絵になっていた。
+// ★2026-09-14 白井さん「トイレ風呂ガス台等の大きさ調整したくない？」→ Excel の図形のように枠のつまみで変える。
+//   物件ごとに違うのは主に間口(キッチン1650〜2700mm、浴槽1100〜1800mm、洗面台600〜1200mm)。奥行きも変えられる。
+function 設備の大きさ(room) {
+  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  if (!size) return null;
+  const f = room.fixtureSize;
+  if (f && Number.isFinite(f.w) && Number.isFinite(f.d) && f.w > 0 && f.d > 0) return { w: f.w, d: f.d };
+  const k = fixtureFitRatio(room);
+  return { w: size.w * k, d: size.d * k };
 }
+const 設備の刻み_MM = 50, 設備の最小_MM = 150;
+// mm の文字。手で決めた大きさは50mm刻み(マスに直した小数の誤差だけ丸める)
+function 設備の寸法の文字(マス) { return Math.round(マス * 910).toLocaleString("ja-JP"); }
 
 // ---- 壁と開口部 ----------------------------------------------------------
 // 2026-09-12: 「窓・ドアが無いように見える」との指摘。原因は、開口部でも壁が
@@ -1666,7 +1682,9 @@ function drawRoomDecor(room) {
     dctx.save();
     dctx.translate(fp.x, fp.y);
     dctx.rotate((fixtureRotation(room) * Math.PI) / 180);
-    drawRoomFixture(room.typeKey, 0, 0, BASE_CELL * view.scale * fixtureScaleFactor(room));
+    // 幅と奥行きは別の倍率。手で変えていなければ両方とも「部屋に収める係数」で、これまでと同じ絵になる
+    const 大 = 設備の大きさ(room), 標準 = FIXTURE_SIZE_MASU[room.typeKey];
+    drawRoomFixture(room.typeKey, 0, 0, BASE_CELL * view.scale, 大.w / 標準.w, 大.d / 標準.d);
     dctx.restore();
   }
   dctx.restore();
@@ -1769,7 +1787,10 @@ function drawRoomDecor(room) {
 // 浴室=浴槽矩形+排水口、洗面所=カウンター矩形+ボウル楕円)。不動産図面の
 // 慣習(絵文字ではなく線画+略記)に合わせ、塗りなしのストロークのみで描く。
 const FIXTURE_ROOM_KEYS = ["wc", "yokushitsu", "senmen", "kitchen"];
-function drawRoomFixture(typeKey, cx, cy, unit) {
+function drawRoomFixture(typeKey, cx, cy, unit, sx = 1, sy = 1) {
+  // 幅(横)は ux、奥行き(縦)は uy で伸ばす。丸いもの(コンロ・水栓・排水口)は ur で丸いまま。
+  // sx = sy のときは、以前の unit * 倍率 と同じ絵になる。
+  const ux = unit * sx, uy = unit * sy, ur = unit * Math.min(sx, sy);
   dctx.save();
   dctx.strokeStyle = "#5c6b78"; dctx.lineWidth = 1.2;
   if (typeKey === "kitchen") {
@@ -1777,7 +1798,7 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     // シンクには水栓、コンロは3口で描き、実際の設備配置に近づける
     // システムキッチン 2550 × 650mm(I型)。壁一面に付く長いカウンター。
     // ★2.55マスと書いていたのは mm とマスの取り違え。2550mm ÷ 910 = 2.80マス。
-    const w = unit * 2.80, h = unit * 0.71;
+    const w = ux * 2.80, h = uy * 0.71;
     dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
     const dividerX = cx - w / 2 + w * 0.42;
     dctx.beginPath();
@@ -1792,11 +1813,11 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     dctx.lineTo(sinkX + sinkW / 2, cy - sinkH / 2 - h * 0.22);
     dctx.stroke();
     dctx.beginPath();
-    dctx.arc(sinkX + sinkW / 2, cy - sinkH / 2 - h * 0.22, unit * 0.025, 0, Math.PI * 2);
+    dctx.arc(sinkX + sinkW / 2, cy - sinkH / 2 - h * 0.22, ur * 0.025, 0, Math.PI * 2);
     dctx.stroke();
     [0.58, 0.75, 0.92].forEach((f) => {
       dctx.beginPath();
-      dctx.arc(cx - w / 2 + w * f, cy, unit * 0.055, 0, Math.PI * 2);
+      dctx.arc(cx - w / 2 + w * f, cy, ur * 0.055, 0, Math.PI * 2);
       dctx.stroke();
     });
   } else if (typeKey === "wc") {
@@ -1804,57 +1825,57 @@ function drawRoomFixture(typeKey, cx, cy, unit) {
     // 1マス=約90cm(半畳)を基準に、実際の洋式トイレの実寸比率
     // (タンク幅約42cm・奥行約16cm、便座部分は幅約38cm・奥行約43cm、
     // 合計奥行約64cm)に近づけて各部のサイズを調整している。
-    const tankW = unit * 0.50, tankH = unit * 0.20;
-    const tankY = cy - unit * 0.385;
+    const tankW = ux * 0.50, tankH = uy * 0.20;
+    const tankY = cy - uy * 0.385;
     dctx.strokeRect(cx - tankW / 2, tankY, tankW, tankH);
     dctx.beginPath();
-    dctx.moveTo(cx + tankW / 2 - unit * 0.05, tankY + tankH * 0.3);
-    dctx.lineTo(cx + tankW / 2 + unit * 0.05, tankY + tankH * 0.3);
+    dctx.moveTo(cx + tankW / 2 - ux * 0.05, tankY + tankH * 0.3);
+    dctx.lineTo(cx + tankW / 2 + ux * 0.05, tankY + tankH * 0.3);
     dctx.stroke();
-    const backW = unit * 0.44, backH = unit * 0.06;
+    const backW = ux * 0.44, backH = uy * 0.06;
     dctx.strokeRect(cx - backW / 2, tankY + tankH, backW, backH);
-    const bowlCy = tankY + tankH + backH + unit * 0.245;
+    const bowlCy = tankY + tankH + backH + uy * 0.245;
     dctx.beginPath();
-    dctx.ellipse(cx, bowlCy, unit * 0.19, unit * 0.245, 0, 0, Math.PI * 2);
+    dctx.ellipse(cx, bowlCy, ux * 0.19, uy * 0.245, 0, 0, Math.PI * 2);
     dctx.stroke();
     dctx.beginPath();
-    dctx.moveTo(cx, bowlCy - unit * 0.24);
-    dctx.lineTo(cx, bowlCy - unit * 0.08);
+    dctx.moveTo(cx, bowlCy - uy * 0.24);
+    dctx.lineTo(cx, bowlCy - uy * 0.08);
     dctx.stroke();
   } else if (typeKey === "yokushitsu") {
     // 浴槽 1400 × 800mm。角を丸め、足元側に排水口を描く(実物の販売図面と同じ)。
-    const w = unit * 1.54, h = unit * 0.88;
-    const r = unit * 0.1;
+    const w = ux * 1.54, h = uy * 0.88;
+    const r = ur * 0.1;
     dctx.beginPath();
     if (dctx.roundRect) dctx.roundRect(cx - w / 2, cy - h / 2, w, h, r);
     else dctx.rect(cx - w / 2, cy - h / 2, w, h);
     dctx.stroke();
     // 洗い場との境(エプロン)を1本
     dctx.beginPath();
-    dctx.moveTo(cx - w / 2 + unit * 0.12, cy - h / 2 + unit * 0.09);
-    dctx.lineTo(cx + w / 2 - unit * 0.12, cy - h / 2 + unit * 0.09);
+    dctx.moveTo(cx - w / 2 + ux * 0.12, cy - h / 2 + uy * 0.09);
+    dctx.lineTo(cx + w / 2 - ux * 0.12, cy - h / 2 + uy * 0.09);
     dctx.stroke();
     dctx.beginPath();
-    dctx.arc(cx + w * 0.34, cy + h * 0.18, unit * 0.05, 0, Math.PI * 2);
+    dctx.arc(cx + w * 0.34, cy + h * 0.18, ur * 0.05, 0, Math.PI * 2);
     dctx.stroke();
   } else if (typeKey === "senmen") {
     // 単なる楕円だけでなく実際の洗面化粧台らしい見た目にする
-    const w = unit * 0.82, h = unit * 0.55;
+    const w = ux * 0.82, h = uy * 0.55;
     dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
     dctx.beginPath();
-    dctx.ellipse(cx, cy, unit * 0.21, unit * 0.095, 0, 0, Math.PI * 2);
+    dctx.ellipse(cx, cy, ux * 0.21, uy * 0.095, 0, 0, Math.PI * 2);
     dctx.stroke();
     dctx.beginPath();
-    dctx.arc(cx, cy, unit * 0.03, 0, Math.PI * 2);
+    dctx.arc(cx, cy, ur * 0.03, 0, Math.PI * 2);
     dctx.stroke();
     dctx.beginPath();
     dctx.moveTo(cx, cy - h / 2);
-    dctx.lineTo(cx, cy - h / 2 - unit * 0.08);
+    dctx.lineTo(cx, cy - h / 2 - uy * 0.08);
     dctx.stroke();
     dctx.beginPath();
-    dctx.arc(cx, cy - h / 2 - unit * 0.08, unit * 0.025, 0, Math.PI * 2);
+    dctx.arc(cx, cy - h / 2 - uy * 0.08, ur * 0.025, 0, Math.PI * 2);
     dctx.stroke();
-    dctx.strokeRect(cx - w * 0.4, cy - h / 2 - unit * 0.22, w * 0.8, unit * 0.12);
+    dctx.strokeRect(cx - w * 0.4, cy - h / 2 - uy * 0.22, w * 0.8, uy * 0.12);
   }
   dctx.restore();
 }
@@ -2421,13 +2442,12 @@ function defaultFixtureGridPos(room) {
   // 設備は壁に接して据え付けるものなので、据える壁の中央から室内へ
   // 「奥行きの半分」だけ入った所を既定にする(指でドラッグすれば好きな場所へ
   // 動かせるのは今までどおり)。以前は部屋の重心の少し上に浮かせていた。
-  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const 大 = 設備の大きさ(room);
   const wall = 設備を据える壁(room);
-  if (size && wall) {
-    const k = fixtureFitRatio(room);
+  if (大 && wall) {
     const p = {
-      gx: wall.mid.gx + wall.nx * (size.d * k) / 2,
-      gy: wall.mid.gy + wall.ny * (size.d * k) / 2,
+      gx: wall.mid.gx + wall.nx * 大.d / 2,
+      gy: wall.mid.gy + wall.ny * 大.d / 2,
     };
     if (isPointInPolygonGrid(p.gx, p.gy, room.points)) return p;
   }
@@ -2451,6 +2471,8 @@ const FIXTURE_SIZE_MASU = {
   senmen:     { w: 0.82, d: 0.55 },   // 洗面化粧台 750 × 500mm
   kitchen:    { w: 2.80, d: 0.71 },   // システムキッチン 2550 × 650mm(2550/910=2.80マス)
 };
+// 上の実寸を mm で(部屋の画面に「約 幅 2,550 × 奥行き 650 mm（自動）」と出す用)。マスは丸めてあるので 910 を掛けると 2548 になる
+const FIXTURE_SIZE_MM = { yokushitsu: { w: 1400, d: 800 }, wc: { w: 455, d: 700 }, senmen: { w: 750, d: 500 }, kitchen: { w: 2550, d: 650 } };
 
 // 設備を据える壁を選ぶ。
 //   ・戸のある壁は入口なので据えない。その**向かい**の壁をいちばん優先する
@@ -2522,10 +2544,26 @@ const FIXTURE_ROTATE_HANDLE_R_PX = 34; // 位置ハンドルの中心から、�
 function fixtureRotateHandlePos(room) {
   const { x, y } = gridToScreen(fixtureGridPos(room).gx, fixtureGridPos(room).gy);
   const rad = ((fixtureRotation(room) - 90) * Math.PI) / 180;
-  return { x: x + Math.cos(rad) * FIXTURE_ROTATE_HANDLE_R_PX, y: y + Math.sin(rad) * FIXTURE_ROTATE_HANDLE_R_PX };
+  // ★大きさの枠の外に出す。枠の上の辺のつまみと同じ向きにあるので、枠の中だと重なって掴み分けられない
+  const 大 = 設備の大きさ(room);
+  const r = Math.max(FIXTURE_ROTATE_HANDLE_R_PX, 大 ? (大.d / 2) * BASE_CELL * view.scale + 22 : 0);
+  return { x: x + Math.cos(rad) * r, y: y + Math.sin(rad) * r };
 }
 function drawFixtureHandle(room) {
   if (!roomHasFixture(room)) return;
+  const 枠 = 設備の枠(room);
+  if (枠) {   // 大きさの枠(Excel の図形を選んだときの枠)
+    dctx.save();
+    dctx.beginPath();
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([ix, iy], i) => {
+      const q = 枠.点(ix * 枠.hw, iy * 枠.hd);
+      if (i) dctx.lineTo(q.x, q.y); else dctx.moveTo(q.x, q.y);
+    });
+    dctx.closePath();
+    dctx.strokeStyle = "#6f4fed"; dctx.lineWidth = 1.2;
+    dctx.stroke();
+    dctx.restore();
+  }
   const { x, y } = gridToScreen(fixtureGridPos(room).gx, fixtureGridPos(room).gy);
   dctx.beginPath();
   dctx.arc(x, y, 14, 0, Math.PI * 2);
@@ -2558,6 +2596,29 @@ function drawFixtureHandle(room) {
   dctx.font = "12px -apple-system, sans-serif";
   dctx.textAlign = "center"; dctx.textBaseline = "middle";
   dctx.fillText("⟳", rp.x, rp.y + 0.5);
+
+  // 大きさのつまみ(白い四角)。向きの線より後に描く(線が上の辺のつまみを横切るため)
+  if (枠) {
+    dctx.save();
+    枠.つまみ.forEach((q) => {
+      dctx.beginPath();
+      dctx.rect(q.x - 5, q.y - 5, 10, 10);
+      dctx.fillStyle = "#fff"; dctx.fill();
+      dctx.lineWidth = 1.8; dctx.strokeStyle = "#6f4fed"; dctx.stroke();
+    });
+    // 引っ張っている間は、いまの寸法を出す
+    if (設備の大きさドラッグ && 設備の大きさドラッグ.room === room) {
+      const 角 = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ix, iy]) => 枠.点(ix * 枠.hw, iy * 枠.hd));
+      const 文字 = `${設備の寸法の文字(枠.大.w)} × ${設備の寸法の文字(枠.大.d)}`;
+      dctx.font = 壁の文字; dctx.textAlign = "center"; dctx.textBaseline = "middle";
+      const w = dctx.measureText(文字).width + 14, h = 20;
+      const cx = 枠.c.x, cy = Math.max(...角.map((p) => p.y)) + 12 + h / 2;
+      角丸の四角(cx - w / 2, cy - h / 2, w, h, 10);
+      dctx.fillStyle = "#6f4fed"; dctx.fill();
+      dctx.fillStyle = "#fff"; dctx.fillText(文字, cx, cy + 0.5);
+    }
+    dctx.restore();
+  }
 }
 function hitTestFixtureHandle(room, sx, sy) {
   if (!roomHasFixture(room)) return false;
@@ -2568,6 +2629,93 @@ function hitTestFixtureRotateHandle(room, sx, sy) {
   if (!roomHasFixture(room)) return false;
   const p = fixtureRotateHandlePos(room);
   return Math.hypot(sx - p.x, sy - p.y) <= FIXTURE_HIT_RADIUS_PX;
+}
+
+// 設備の枠(画面の座標)。中心 c、半分の幅 hw・奥行き hd(px)、設備の向きに沿った点 → 画面の点、大きさのつまみ。
+// つまみは、その向きの長さが画面で 36px 以上あるときだけ出す(狭いと中心や隣のつまみと掴み分けられない。28px ではトイレの8つが 34×52px に詰まった。拡大すれば出る)。
+const 設備のつまみの間隔_PX = 36, 設備の大きさのつまみの当たり_PX = 16;
+function 設備の枠(room) {
+  const 大 = 設備の大きさ(room);
+  if (!大) return null;
+  const f = fixtureGridPos(room);
+  const c = gridToScreen(f.gx, f.gy);
+  const rad = (fixtureRotation(room) * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const hw = (大.w / 2) * BASE_CELL * view.scale, hd = (大.d / 2) * BASE_CELL * view.scale;
+  const 点 = (lx, ly) => ({ x: c.x + lx * cos - ly * sin, y: c.y + lx * sin + ly * cos });
+  const 幅も = hw * 2 >= 設備のつまみの間隔_PX, 奥も = hd * 2 >= 設備のつまみの間隔_PX;
+  const つまみ = [];
+  [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].forEach(([ix, iy]) => {
+    if ((ix !== 0 && !幅も) || (iy !== 0 && !奥も)) return;
+    つまみ.push({ ix, iy, ...点(ix * hw, iy * hd) });
+  });
+  return { c, rad, cos, sin, hw, hd, 点, つまみ, 大 };
+}
+// 設備のつまみのうち、指にいちばん近いもの。{ 種類: "回す"|"動かす"|"大きさ", ix, iy, 距離 } か null。
+// ★「回す→動かす」の決め打ちの順だと、小さな設備で大きさのつまみが中心のつまみの当たりに埋もれて掴めない
+function 設備のつまみに当たるか(room, sx, sy) {
+  if (!roomHasFixture(room)) return null;
+  const 枠 = 設備の枠(room);
+  const rp = fixtureRotateHandlePos(room);
+  const 候補 = [
+    { 種類: "回す", x: rp.x, y: rp.y, r: FIXTURE_HIT_RADIUS_PX },
+    { 種類: "動かす", x: 枠.c.x, y: 枠.c.y, r: FIXTURE_HIT_RADIUS_PX },
+    ...枠.つまみ.map((q) => ({ 種類: "大きさ", ix: q.ix, iy: q.iy, x: q.x, y: q.y, r: 設備の大きさのつまみの当たり_PX })),
+  ];
+  let best = null;
+  for (const k of 候補) {
+    const 距離 = Math.hypot(sx - k.x, sy - k.y);
+    if (距離 <= k.r && (!best || 距離 < best.距離)) best = { 種類: k.種類, ix: k.ix, iy: k.iy, 距離 };
+  }
+  return best;
+}
+// マウスのカーソル。つまみの向き(設備の向きを足す)に合った矢印
+function 設備の大きさのカーソル(room, ix, iy) {
+  const 角度 = ((fixtureRotation(room) + (Math.atan2(iy, ix) * 180) / Math.PI) % 180 + 180) % 180;
+  if (角度 < 22.5 || 角度 >= 157.5) return "ew-resize";
+  if (角度 < 67.5) return "nwse-resize";
+  if (角度 < 112.5) return "ns-resize";
+  return "nesw-resize";
+}
+function 設備の大きさを変える準備(room, ix, iy, sx, sy) {
+  const 大 = 設備の大きさ(room);
+  return {
+    room, ix, iy,
+    始めのJSON: JSON.stringify(state.rooms), 積んだ: false,
+    中心: { ...fixtureGridPos(room) }, 向き: fixtureRotation(room), w: 大.w, d: 大.d,
+    始めの指: screenToGridRaw(sx, sy), 始めの画面: { x: sx, y: sy }, 動き出した: false,
+  };
+}
+// 指の位置から大きさを決める。反対側の辺は動かさない(Excel と同じ)。
+function 設備の大きさを動かす(d, sx, sy) {
+  const g = screenToGridRaw(sx, sy);
+  const rad = (d.向き * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  // 指が動いた量を、設備の向きに沿った量(マス)へ。★指の位置そのものを使うと、掴んだ瞬間に跳ねる
+  const mx = g.gx - d.始めの指.gx, my = g.gy - d.始めの指.gy;
+  const lx = mx * cos + my * sin, ly = -mx * sin + my * cos;
+  const 刻み = 設備の刻み_MM / 910, 最小 = 設備の最小_MM / 910;
+  // 引いていない向き(符号0)も50mm刻みに揃える(手で決めた大きさは全部50mm刻み。自動の 646.1mm のまま残すと 645 と出る)。
+  //   揃えるときに動かさないのは、奥行きなら壁側の辺(設備の向きで上 = -y)、幅なら中心
+  const 決める = (元, 符号, 動き, 壁側を残す) => {
+    if (!符号) {
+      const 長さ = Math.max(最小, Math.round(元 / 刻み) * 刻み);
+      return { 長さ, 中: 壁側を残す ? (長さ - 元) / 2 : 0 };
+    }
+    const 固定 = -符号 * 元 / 2;                               // 動かさない辺
+    const 生 = 符号 * (符号 * 元 / 2 + 動き - 固定);            // 掴んだ辺と固定の辺の間
+    const 長さ = Math.max(最小, Math.round(生 / 刻み) * 刻み);
+    return { 長さ, 中: 固定 + (符号 * 長さ) / 2 };
+  };
+  const 横 = 決める(d.w, d.ix, lx, false), 縦 = 決める(d.d, d.iy, ly, true);
+  const room = d.room;
+  const 中心 = { gx: d.中心.gx + 横.中 * cos - 縦.中 * sin, gy: d.中心.gy + 横.中 * sin + 縦.中 * cos };
+  const 今 = room.fixtureSize;
+  if (今 && Math.abs(今.w - 横.長さ) < 1e-9 && Math.abs(今.d - 縦.長さ) < 1e-9) return false;
+  if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+  // 向きと位置も決めて持つ。★持たないと、幅を変えた拍子に「据える壁」の選び直しで向きが変わることがある
+  room.fixtureRotation = d.向き;
+  room.fixturePos = 中心;
+  room.fixtureSize = { w: 横.長さ, d: 縦.長さ };
+  return true;
 }
 
 // 全階俯瞰: 「全階表示」がONの場合、現在の階以外の部屋を薄いゴースト表示で
@@ -3120,21 +3268,32 @@ function tryRoomSelectionTap(sx, sy) {
   lastTapWasDeselect = false;
   if (editingRoom) {
     const hIdx = hitTestVertexHandle(editingRoom, sx, sy);
-    if (hIdx !== null) {
+    const 設備 = 設備のつまみに当たるか(editingRoom, sx, sy);
+    // 部屋の角と設備のつまみが両方届くときは近い方(壁いっぱいのキッチンは、枠の角が部屋の角のすぐそばに来る)
+    const 角の距離 = hIdx !== null
+      ? Math.hypot(sx - gridToScreen(editingRoom.points[hIdx].gx, editingRoom.points[hIdx].gy).x, sy - gridToScreen(editingRoom.points[hIdx].gx, editingRoom.points[hIdx].gy).y)
+      : Infinity;
+    if (hIdx !== null && !(設備 && 設備.距離 < 角の距離)) {
       snapshot();
       vertexDrag = { room: editingRoom, index: hIdx };
       render();
       return true;
     }
-    if (hitTestFixtureRotateHandle(editingRoom, sx, sy)) {
+    if (設備 && 設備.種類 === "回す") {
       snapshot();
       fixtureRotateDrag = { room: editingRoom };
       render();
       return true;
     }
-    if (hitTestFixtureHandle(editingRoom, sx, sy)) {
+    if (設備 && 設備.種類 === "動かす") {
       snapshot();
       fixtureDrag = { room: editingRoom };
+      render();
+      return true;
+    }
+    if (設備 && 設備.種類 === "大きさ") {
+      // 履歴は実際に大きさが変わったときだけ積む(つまみに触っただけで「戻す」が1つ増えないように)
+      設備の大きさドラッグ = 設備の大きさを変える準備(editingRoom, 設備.ix, 設備.iy, sx, sy);
       render();
       return true;
     }
@@ -3158,7 +3317,7 @@ function tryRoomSelectionTap(sx, sy) {
     const キーの案内 = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
       ? "" : "（壁の長さの数字をドラッグすると壁が動きます。Delete で削除、矢印キーで移動）";
     showHint((roomHasFixture(room)
-      ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを調整できます"
+      ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを、枠の四角いつまみで大きさを調整できます(つまみが出ないときは拡大)"
       : "頂点をドラッグで形を調整できます。もう一度タップすると編集メニューが開きます") + キーの案内);
     return true;
   }
@@ -3305,6 +3464,18 @@ drawCanvas.addEventListener("pointermove", (e) => {
     const snapped = Math.round(angleDeg / 15) * 15;
     room.fixtureRotation = ((snapped % 360) + 360) % 360;
     render();
+    return;
+  }
+
+  if (設備の大きさドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 設備の大きさドラッグ;
+    if (!d.動き出した) {   // ★触っただけの手ぶれで50mm刻みに吸い付かせない
+      if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 4) return;
+      d.動き出した = true;
+    }
+    if (設備の大きさを動かす(d, sx, sy)) render();
     return;
   }
 
@@ -3470,6 +3641,20 @@ function finalizeActiveDrags() {
     if (!room.tatamiManual) room.tatami = masuToTatami(polygonAreaMasu(room.points));
     vertexDrag = null;
     render(); autoSave();
+    return true;
+  }
+  if (設備の大きさドラッグ) {
+    const d = 設備の大きさドラッグ;
+    設備の大きさドラッグ = null;
+    render();
+    if (d.積んだ) {
+      autoSave();
+      const 大 = 設備の大きさ(d.room);
+      const 文 = `${roomType(d.room).label}の設備を 幅${設備の寸法の文字(大.w)} × 奥行き${設備の寸法の文字(大.d)}mm にしました`;
+      // 部屋に入らなくても縮めない(白井さんの選択)。そのかわり知らせる
+      if (設備がはみ出しているか(d.room)) showHint(文 + "。部屋からはみ出しています（はみ出した所は描かれません。「戻す」で戻せます）", true);
+      else showHint(文);
+    }
     return true;
   }
   if (fixtureDrag) {
@@ -3756,6 +3941,7 @@ function 数字がつまみと重なるか(room, cx, cy, w, h) {
     const f = fixtureGridPos(room);
     丸.push({ ...gridToScreen(f.gx, f.gy), r: FIXTURE_HIT_RADIUS_PX });
     丸.push({ ...fixtureRotateHandlePos(room), r: FIXTURE_HIT_RADIUS_PX });
+    (設備の枠(room) || { つまみ: [] }).つまみ.forEach((q) => 丸.push({ x: q.x, y: q.y, r: 設備の大きさのつまみの当たり_PX }));
   }
   return 丸.some((c) => {
     const nx = Math.max(cx - w / 2, Math.min(c.x, cx + w / 2)), ny = Math.max(cy - h / 2, Math.min(c.y, cy + h / 2));
@@ -3796,8 +3982,7 @@ function 壁の長さを描く(room) {
   dctx.restore();
 }
 function ほかのつまみに当たるか(room, sx, sy) {
-  return hitTestVertexHandle(room, sx, sy) !== null
-    || hitTestFixtureRotateHandle(room, sx, sy) || hitTestFixtureHandle(room, sx, sy);
+  return hitTestVertexHandle(room, sx, sy) !== null || 設備のつまみに当たるか(room, sx, sy) !== null;
 }
 function 壁のつまみに当たるか(room, sx, sy) {
   for (let i = room.points.length - 1; i >= 0; i--) {
@@ -3892,9 +4077,9 @@ function 設備がはみ出しているか(room) {
   if (!SHOW_ROOM_FIXTURES || !FIXTURE_ROOM_KEYS.includes(room.typeKey)) return false;
   const size = FIXTURE_SIZE_MASU[room.typeKey];
   if (!size || room.points.length < 3) return false;
-  const c = fixtureGridPos(room), k = fixtureFitRatio(room);
+  const c = fixtureGridPos(room), 大 = 設備の大きさ(room);
   const rad = (fixtureRotation(room) * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
-  const hw = ((size.w * k) / 2) * 0.95, hd = ((size.d * k) / 2) * 0.95;   // 壁にぴったり付けた設備を数えない
+  const hw = (大.w / 2) * 0.95, hd = (大.d / 2) * 0.95;   // 壁にぴったり付けた設備を数えない
   return [[0, 0], [-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]].some(([x, y]) =>
     !isPointInPolygonGrid(c.gx + x * cos - y * sin, c.gy + x * sin + y * cos, room.points));
 }
@@ -4009,13 +4194,22 @@ drawCanvas.addEventListener("pointermove", (e) => {
 drawCanvas.addEventListener("pointermove", (e) => {
   if (e.pointerType !== "mouse" || panDrag || spaceHeld) return;
   let 形 = "";
+  const rect = drawCanvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
   const room = 壁ドラッグ ? 壁ドラッグ.room : editingRoom;
   if (room && currentTool === "wall" && drawingPoints.length === 0 && (壁ドラッグ || pointers.size === 0)) {
-    const rect = drawCanvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
     const i = 壁ドラッグ ? 壁ドラッグ.edge
       : (ほかのつまみに当たるか(room, sx, sy) ? null : 壁のつまみに当たるか(room, sx, sy));
     if (i !== null && room.points[i]) 形 = 横の壁か(room.points, i) ? "ns-resize" : "ew-resize";
+  }
+  // 設備のつまみ：大きさ＝向きに合った矢印、位置＝十字、向き＝つかむ手
+  if (!壁ドラッグ && currentTool === "wall" && drawingPoints.length === 0) {
+    const d = 設備の大きさドラッグ;
+    if (d) 形 = 設備の大きさのカーソル(d.room, d.ix, d.iy);
+    else if (editingRoom && pointers.size === 0) {
+      const 設備 = 設備のつまみに当たるか(editingRoom, sx, sy);
+      if (設備) 形 = 設備.種類 === "大きさ" ? 設備の大きさのカーソル(editingRoom, 設備.ix, 設備.iy) : (設備.種類 === "動かす" ? "move" : "grab");
+    }
   }
   if (drawCanvas.style.cursor !== 形) drawCanvas.style.cursor = 形;
 });
@@ -4301,7 +4495,28 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
     $("btnStairCorner").textContent = 曲がり角の名前($("tatamiModal").dataset.stairCorner);
   }
   $("stairCornerRow").style.display = isStair && $("tatamiModal").dataset.stairBent === "1" ? "flex" : "none";
+  // 設備の大きさ(図面の枠で変える)。いまの寸法と「自動に戻す」。種類を変えている途中(新しい種類)では出さない
+  const 設備の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && roomHasFixture(editingRoom);
+  $("tatamiModal").dataset.fixtureReset = "0";
+  $("fixtureSizeRow").style.display = 設備の部屋 ? "flex" : "none";
+  if (設備の部屋) {
+    const 大 = 設備の大きさ(editingRoom);
+    const 手で = editingRoom.fixtureSize || editingRoom.fixturePos || editingRoom.fixtureRotation != null;
+    if (editingRoom.fixtureSize) {
+      $("fixtureSizeText").textContent = `幅 ${設備の寸法の文字(大.w)} × 奥行き ${設備の寸法の文字(大.d)} mm`;
+    } else {
+      const 実寸 = FIXTURE_SIZE_MM[editingRoom.typeKey], k = fixtureFitRatio(editingRoom);
+      const 丸め = (mm) => (Math.round((mm * k) / 5) * 5).toLocaleString("ja-JP");
+      $("fixtureSizeText").textContent = `約 幅 ${丸め(実寸.w)} × 奥行き ${丸め(実寸.d)} mm（自動）`;
+    }
+    $("btnFixtureReset").disabled = !手で;
+  }
 }
+$("btnFixtureReset").addEventListener("click", () => {
+  $("tatamiModal").dataset.fixtureReset = "1";
+  $("fixtureSizeText").textContent = "確定すると、自動の大きさ・位置・向きに戻ります";
+  $("btnFixtureReset").disabled = true;
+});
 $("btnChangeRoomType").addEventListener("click", () => {
   hideModal("tatamiModal");
   openRoomTypeModal(true);
@@ -4377,6 +4592,9 @@ function confirmTatami() {
     editingRoom.tatamiManual = (v !== masuToTatami(polygonAreaMasu(editingRoom.points)));
     if (isStair) { editingRoom.stepCount = stepCount; editingRoom.stairRotation = stairRotation; }
     曲がり角を合わせる(editingRoom);
+    if ($("tatamiModal").dataset.fixtureReset === "1") {
+      delete editingRoom.fixtureSize; delete editingRoom.fixturePos; delete editingRoom.fixtureRotation;
+    }
     editingRoom = null;
   } else {
     snapshot();
@@ -4419,6 +4637,8 @@ function selectRoomType(type) {
   const masu = pendingRoom.masu;
   const tatami = masuToTatami(masu);
   const source = "マス目から自動計算";
+  // 手で決めた設備の大きさは、その種類の設備のもの(キッチンの 2550mm を便器に当てない)
+  if (editingRoom && editingRoom.typeKey !== type.key) delete editingRoom.fixtureSize;
   if (editingRoom) editingRoom.typeKey = type.key;
   pendingRoom.typeKey = type.key;
   pendingRoom.tatami = tatami;
@@ -4808,7 +5028,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
