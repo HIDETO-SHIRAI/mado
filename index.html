@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-3">
+<meta name="app-version" content="2026-09-14-4">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -1867,6 +1867,35 @@ const STAIR_ARROW_COLOR = "#3b4855";
 // 上りの矢印を、点の並び(折れ線)として描く。最後の点が上り切った側。
 // 端は壁から margin だけ内側に置く。壁の上に乗せると線が壁と重なって
 // 「突き抜けている」ように見える(L字の実機画像で確認)。
+// ★階段の形は「図面の座標」(倍率1・原点0。1マス=BASE_CELL)で計算し、描くときだけ画面へ移す。
+//   2026-09-14、白井さん「スマホで拡大・縮小すると階段の矢印や段がバグる」。
+//   それまでは画面のピクセル座標で「縦長か横長か」「矢印をどちらの端へ向けるか」を比べていた。
+//   正方形の階段の縦と横、L字の左右の脚のように**本当は同じ長さ**の所が、倍率と位置で小数の誤差が
+//   変わるたびに大小が入れ替わり、段の向きが90度変わったり、矢印の曲がり方や向きが裏返ったりしていた
+//   (白井さんの実データの階段18個を9つの倍率で描いて確認。正方形は×0.55以下で段が縦線に、L字は倍率ごとにばらばら)。
+//   → 図面の座標なら、どの倍率でも同じ数字で比べるので、判定が変わらない。
+//   ★線の太さと矢じりの大きさだけは画面のピクセルのまま(図面の座標のまま線を引くと、拡大で太る)。
+let 階段の画面の変換 = null;   // 図面の座標へ切り替える前の変換。線を引く瞬間だけこれに戻す
+function 階段を図面の座標で描く(描く) {
+  const 元 = dctx.getTransform();   // 画像で保存するときは別の倍率なので、決め打ちせず取っておく
+  dctx.save();
+  dctx.translate(view.offX, view.offY);
+  dctx.scale(view.scale, view.scale);
+  階段の画面の変換 = 元;
+  try { 描く(); } finally { 階段の画面の変換 = null; dctx.restore(); }
+}
+// 線の形は図面の座標で積んだまま、太さだけ画面のピクセルで引く(canvas は線の太さを stroke の瞬間の変換で決める)
+function 階段の線を引く() {
+  if (!階段の画面の変換) { dctx.stroke(); return; }
+  const 今 = dctx.getTransform();
+  dctx.setTransform(階段の画面の変換);
+  dctx.stroke();
+  dctx.setTransform(今);
+}
+function 階段の図面の点(room) {
+  return room.points.map((p) => ({ x: p.gx * BASE_CELL, y: p.gy * BASE_CELL }));
+}
+
 function drawStairArrowPath(points) {
   if (points.length < 2) return;
   dctx.save();
@@ -1875,23 +1904,27 @@ function drawStairArrowPath(points) {
   dctx.lineJoin = "round"; dctx.lineCap = "round";
   dctx.beginPath();
   points.forEach((p, i) => { if (i === 0) dctx.moveTo(p.x, p.y); else dctx.lineTo(p.x, p.y); });
-  dctx.stroke();
+  階段の線を引く();
   const end = points[points.length - 1], prev = points[points.length - 2];
   const dx = end.x - prev.x, dy = end.y - prev.y;
   const len = Math.hypot(dx, dy) || 1;
   const ux = dx / len, uy = dy / len;
-  const headLen = Math.min(11, len * 0.4);
+  // 矢じりは画面で最大11px(図面の座標で描いているので、倍率で割って画面の大きさに揃える)
+  const headLen = Math.min(11 / (階段の画面の変換 ? view.scale : 1), len * 0.4);
   dctx.beginPath();
   dctx.moveTo(end.x, end.y);
   dctx.lineTo(end.x - ux * headLen - uy * headLen * 0.5, end.y - uy * headLen + ux * headLen * 0.5);
   dctx.moveTo(end.x, end.y);
   dctx.lineTo(end.x - ux * headLen + uy * headLen * 0.5, end.y - uy * headLen - ux * headLen * 0.5);
-  dctx.stroke();
+  階段の線を引く();
   dctx.restore();
 }
 
 function drawStairSymbol(room) {
-  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  階段を図面の座標で描く(() => 階段の記号を描く(room));
+}
+function 階段の記号を描く(room) {
+  const pts = 階段の図面の点(room);
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
   const minY = Math.min(...pts.map((p) => p.y)), maxY = Math.max(...pts.map((p) => p.y));
   const w = maxX - minX, h = maxY - minY;
@@ -1943,12 +1976,12 @@ function drawStairSymbol(room) {
   if (vertical) {
     for (let i = 1; i < treadCount; i++) {
       const y = minY + (h * i) / treadCount;
-      dctx.beginPath(); dctx.moveTo(minX + w * 0.12, y); dctx.lineTo(maxX - w * 0.12, y); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(minX + w * 0.12, y); dctx.lineTo(maxX - w * 0.12, y); 階段の線を引く();
     }
   } else {
     for (let i = 1; i < treadCount; i++) {
       const x = minX + (w * i) / treadCount;
-      dctx.beginPath(); dctx.moveTo(x, minY + h * 0.12); dctx.lineTo(x, maxY - h * 0.12); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(x, minY + h * 0.12); dctx.lineTo(x, maxY - h * 0.12); 階段の線を引く();
     }
   }
   dctx.restore();
@@ -1984,12 +2017,12 @@ function drawGenericStairTreads(pts, minX, maxX, minY, maxY, stepCount, axisSwap
   if (vertical) {
     for (let i = 1; i < treadCount; i++) {
       const y = minY + (h * i) / treadCount;
-      dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); 階段の線を引く();
     }
   } else {
     for (let i = 1; i < treadCount; i++) {
       const x = minX + (w * i) / treadCount;
-      dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); 階段の線を引く();
     }
   }
   dctx.restore();
@@ -2078,7 +2111,7 @@ function drawGenericStairArrow(pts, minX, maxX, minY, maxY, axisSwapped, reverse
 // 収まるため、既にdrawStairSymbol内で描画済み(ここでは何もしない)。
 function drawStairArrowIfNeeded(room) {
   if (room.typeKey !== "kaidan") return;
-  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const pts = 階段の図面の点(room);
   if (pts.length <= 4) return;
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
   const minY = Math.min(...pts.map((p) => p.y)), maxY = Math.max(...pts.map((p) => p.y));
@@ -2090,7 +2123,7 @@ function drawStairArrowIfNeeded(room) {
   const rotation = room.stairRotation != null ? room.stairRotation : (room.stairFlip ? 180 : 0);
   const axisSwapped = rotation === 90 || rotation === 270;
   const reversed = rotation === 180 || rotation === 270;
-  drawGenericStairArrow(pts, minX, maxX, minY, maxY, axisSwapped, reversed);
+  階段を図面の座標で描く(() => drawGenericStairArrow(pts, minX, maxX, minY, maxY, axisSwapped, reversed));
 }
 
 // L字・コの字等の折れ階段用: 反射頂点(部屋の外接矩形の内側に食い込んでいる頂点)を
@@ -2115,7 +2148,7 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
     dctx.strokeStyle = STAIR_TREAD_COLOR; dctx.lineWidth = 1;
     for (let i = 1; i < 10; i++) {
       const x = minX + (w * i) / 10;
-      dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); 階段の線を引く();
     }
     dctx.restore();
     return;
@@ -2183,13 +2216,24 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
     }
     return [r0, Math.max(r1 - landing, r0)];
   }
+  // ★曲がり角(踊り場)は、欠けた角の**反対側**にある。横の脚は欠けた角の x へ、縦の脚は欠けた角の y へ伸びる。
+  //   2026-09-14 まで、全幅・全高の範囲では「反射頂点に近い端」を曲がり角側としていた。反射頂点が
+  //   ちょうど真ん中にあると両端が同じ距離になり、どちらを選ぶかが小数の誤差任せで、倍率を変えるたびに
+  //   踊り場や矢印の側が入れ替わっていた。図面の座標で描くようにして誤差は消えたが、同点のときは
+  //   いつも同じ側(間違った側)を選ぶ形で固まっていた(調布市入間町のL字で、縦の脚の矢印が下へ少し出て終わる)。
+  const 曲がり角のX = missing.x === maxX ? minX : maxX;
+  const 曲がり角のY = missing.y === maxY ? minY : maxY;
+  const 曲がり角側を詰める = (range, 端) => (端 === range[0]
+    ? [Math.min(range[0] + landing, range[1]), range[1]]
+    : [range[0], Math.max(range[1] - landing, range[0])]);
   // band1の踏み板を並べる「長さ方向」の範囲(歩く向きがXならX、Yなら元々のband1Y)
+  // ★band1Y・band2X の範囲は反射頂点がちょうど片端なので、近い端の判定で同点にならない(従来どおり)
   const band1Length = band1IsWide
-    ? shrinkLengthNearReflex([minX, maxX], reflex.x)
+    ? 曲がり角側を詰める([minX, maxX], 曲がり角のX)
     : shrinkLengthNearReflex(band1Y, reflex.y);
   // band2の踏み板を並べる「長さ方向」の範囲
   const band2Length = band2IsTall
-    ? shrinkLengthNearReflex([minY, maxY], reflex.y)
+    ? 曲がり角側を詰める([minY, maxY], 曲がり角のY)
     : shrinkLengthNearReflex(band2X, reflex.x);
 
   // 段数(stepCount)を、各区間の実際の歩く向きの長さの比で振り分ける。
@@ -2209,24 +2253,24 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   if (band1IsWide) {
     for (let i = 1; i < legTreads1; i++) {
       const x = band1Length[0] + ((band1Length[1] - band1Length[0]) * i) / legTreads1;
-      dctx.beginPath(); dctx.moveTo(x, band1Y[0]); dctx.lineTo(x, band1Y[1]); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(x, band1Y[0]); dctx.lineTo(x, band1Y[1]); 階段の線を引く();
     }
   } else {
     for (let i = 1; i < legTreads1; i++) {
       const y = band1Length[0] + ((band1Length[1] - band1Length[0]) * i) / legTreads1;
-      dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); 階段の線を引く();
     }
   }
   // band2: 踏み板は断面(band2Xの全幅)いっぱいに引き、長さ方向の位置はband2Lengthで並べる
   if (band2IsTall) {
     for (let i = 1; i < legTreads2; i++) {
       const y = band2Length[0] + ((band2Length[1] - band2Length[0]) * i) / legTreads2;
-      dctx.beginPath(); dctx.moveTo(band2X[0], y); dctx.lineTo(band2X[1], y); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(band2X[0], y); dctx.lineTo(band2X[1], y); 階段の線を引く();
     }
   } else {
     for (let i = 1; i < legTreads2; i++) {
       const x = band2Length[0] + ((band2Length[1] - band2Length[0]) * i) / legTreads2;
-      dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
+      dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); 階段の線を引く();
     }
   }
   // 折れ部は「踊り場」として空けておき、その境界に線を1本ずつ引く。
@@ -2241,18 +2285,18 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   const 踊り場の境 = (range, pivot) =>
     (Math.abs(range[0] - pivot) <= Math.abs(range[1] - pivot) ? range[0] : range[1]);
   if (band1IsWide) {
-    const x = 踊り場の境(band1Length, reflex.x);
-    dctx.beginPath(); dctx.moveTo(x, band1Y[0]); dctx.lineTo(x, band1Y[1]); dctx.stroke();
+    const x = 曲がり角のX === minX ? band1Length[0] : band1Length[1];
+    dctx.beginPath(); dctx.moveTo(x, band1Y[0]); dctx.lineTo(x, band1Y[1]); 階段の線を引く();
   } else {
     const y = 踊り場の境(band1Length, reflex.y);
-    dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); dctx.stroke();
+    dctx.beginPath(); dctx.moveTo(minX, y); dctx.lineTo(maxX, y); 階段の線を引く();
   }
   if (band2IsTall) {
-    const y = 踊り場の境(band2Length, reflex.y);
-    dctx.beginPath(); dctx.moveTo(band2X[0], y); dctx.lineTo(band2X[1], y); dctx.stroke();
+    const y = 曲がり角のY === minY ? band2Length[0] : band2Length[1];
+    dctx.beginPath(); dctx.moveTo(band2X[0], y); dctx.lineTo(band2X[1], y); 階段の線を引く();
   } else {
     const x = 踊り場の境(band2Length, reflex.x);
-    dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); dctx.stroke();
+    dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); 階段の線を引く();
   }
   dctx.restore();
 
@@ -2262,8 +2306,10 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   // そのまま使っていたため、矢印が通路の端に寄ってしまっていた)。
   const band1CenterY = (band1Y[0] + band1Y[1]) / 2;
   const band2CenterX = (band2X[0] + band2X[1]) / 2;
-  const farXFromReflex = Math.abs(reflex.x - minX) > Math.abs(maxX - reflex.x) ? minX : maxX;
-  const farYFromReflex = Math.abs(reflex.y - minY) > Math.abs(maxY - reflex.y) ? minY : maxY;
+  // ★脚の行き先は欠けた角の側(上の「曲がり角のX/Y」の反対)。反射頂点から遠い端で決めると、
+  //   真ん中にあるとき同点になり、縦の脚が曲がり角の中へ少し戻るだけの矢印になっていた。
+  const farXFromReflex = missing.x;
+  const farYFromReflex = missing.y;
   const legA = band1IsWide ? { x: farXFromReflex, y: band1CenterY } : { x: band2CenterX, y: far1Y };
   const bend = { x: band2CenterX, y: band1CenterY };
   const legB = band2IsTall ? { x: band2CenterX, y: farYFromReflex } : { x: far2X, y: band1CenterY };
