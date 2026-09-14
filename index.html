@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-13-1">
+<meta name="app-version" content="2026-09-14-1">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -1167,15 +1167,30 @@ function snapshot() {
 }
 function undo() {
   if (!history.length) return;
+  const 前 = state.rooms;
   future.push(JSON.stringify(state.rooms));
   state.rooms = JSON.parse(history.pop());
+  選択を引き継ぐ(前);
   render(); updateUndoRedoButtons(); autoSave();
 }
 function redo() {
   if (!future.length) return;
+  const 前 = state.rooms;
   history.push(JSON.stringify(state.rooms));
   state.rooms = JSON.parse(future.pop());
+  選択を引き継ぐ(前);
   render(); updateUndoRedoButtons(); autoSave();
+}
+// ★戻す・進むは state.rooms を JSON から**作り直す**。選んでいた部屋(editingRoom)は
+//   古い配列の物を指したまま残り、画面には元の位置にハンドルが出るのに、
+//   動かしても消しても**配列に無い幽霊を触るだけで何も起きない**(例外も出ない)。
+//   Delete と矢印キーで選んだ部屋を触れるようにしたので、ここで必ず引き継ぐ。
+//   部屋には固有のIDが無いので、並び順で引き継ぐ。部屋の数が変わった(足した・
+//   消したのを戻した)ときは、どれを指すか決められないので選択を外す。
+function 選択を引き継ぐ(前の部屋たち) {
+  if (!editingRoom) return;
+  const i = 前の部屋たち.indexOf(editingRoom);
+  editingRoom = (i >= 0 && 前の部屋たち.length === state.rooms.length) ? state.rooms[i] : null;
 }
 function updateUndoRedoButtons() {
   $("btnUndo").disabled = history.length === 0;
@@ -3041,9 +3056,12 @@ function tryRoomSelectionTap(sx, sy) {
     }
     editingRoom = room;
     render();
-    showHint(roomHasFixture(room)
+    // ★マウスのときは、選んだ部屋に効くキーを添える(知らなければ使われない)。
+    const キーの案内 = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
+      ? "" : "（Delete で削除、矢印キーで移動）";
+    showHint((roomHasFixture(room)
       ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを調整できます"
-      : "頂点をドラッグで形を調整できます。もう一度タップすると編集メニューが開きます");
+      : "頂点をドラッグで形を調整できます。もう一度タップすると編集メニューが開きます") + キーの案内);
     return true;
   }
   if (editingRoom) {
@@ -3411,6 +3429,11 @@ drawCanvas.addEventListener("pointercancel", endPointer);
      Enter                   … 3点以上描いてあれば部屋を閉じる
      Backspace               … 描きかけの点を1つ戻す
      + / - / 0               … 拡大 / 縮小 / 全体を表示
+   2026-09-14 に足したもの:
+     右クリック              … 描いている途中は1点戻す／建具・部屋の上は編集画面を開く
+     Delete / Backspace      … 選んだ部屋を消す(描いていないとき。Ctrl+Z で戻せる)
+     矢印キー                … 選んだ部屋を動かす(点を置く細かさ1つぶん／Shift で1マス)
+                               何も選んでいなければ図面を動かす(1マス／Shift で5マス)
 
    ★既存の指の操作(pointerdown〜)には一切手を入れていない。パンだけは document の
      capture 段で先に横取りし、canvas 側のなぞり描きへ流さないようにしている
@@ -3502,6 +3525,106 @@ document.addEventListener("pointercancel", endPan, true);
 // 中ボタンの「自動スクロール」が始まると図面が動かせなくなるので止める
 drawCanvas.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
 
+/* ---------------- 右クリック ----------------
+   ★それまで右ボタンを区別していなかった。canvas の pointerdown はボタンを見ないので、
+     **右クリックが「タップ」として扱われ、何もない場所なら部屋を描き始めていた**。
+     しかも同時にブラウザのメニューが開き、描きかけの1点が残る。
+   → 右ボタンは document の capture 段で先に受け取り、なぞり描きへ流さない(中ボタンと同じ作り)。
+     離した合図も止める。止めないと endPointer が「点の確定」を走らせる。
+   ★指の操作は button が常に 0 なので、ここには来ない。指の動きは1つも変わらない。
+
+     描いている途中 … 1点戻す(Backspace と同じ。何度押しても壊れない操作にする)
+     建具の上       … 建具の画面を開く
+     部屋の中       … 選んで、そのまま編集メニューを開く(タップ2回ぶんを1回で)
+     何もない場所   … 選択を外す
+*/
+let 最後のポインタ = "";
+document.addEventListener("pointerdown", (e) => {
+  if (e.target !== drawCanvas) return;
+  最後のポインタ = e.pointerType || "";
+  if (e.button !== 2) return;
+  e.preventDefault(); e.stopPropagation();       // なぞり描きへ流さない
+  if (panDrag || モーダルが開いているか()) return;
+  const rect = drawCanvas.getBoundingClientRect();
+  右クリックした(e.clientX - rect.left, e.clientY - rect.top);
+}, true);
+document.addEventListener("pointerup", (e) => {
+  if (e.target === drawCanvas && e.button === 2) e.stopPropagation();
+}, true);
+// ブラウザのメニューを出さない。★長押しでも contextmenu が来る端末があるので、
+//   指のときは何もしない(いままでどおり)。
+drawCanvas.addEventListener("contextmenu", (e) => {
+  if (最後のポインタ === "touch") return;
+  e.preventDefault();
+});
+
+function 右クリックした(sx, sy) {
+  if (drawingPoints.length > 0) { undoLastPoint(); return; }
+  const 建具 = hitTestExistingDoor(sx, sy);
+  if (建具) { openDoorEditModal(建具.room, 建具.index); return; }
+  const w = screenToGridRaw(sx, sy);
+  const 部屋 = hitTestRoom(w.gx, w.gy);
+  if (部屋) { openRoomEditor(部屋); return; }
+  if (editingRoom) { editingRoom = null; render(); }
+}
+
+/* ---------------- 選んだ部屋を消す・動かす(キーボード) ---------------- */
+
+/** 選んでいる部屋を返す。★配列に無い(戻したあとの幽霊)なら選択を外して null。 */
+function 選んでいる部屋() {
+  if (editingRoom && !state.rooms.includes(editingRoom)) { editingRoom = null; render(); }
+  return editingRoom;
+}
+
+function 選んだ部屋を消す() {
+  const room = 選んでいる部屋();
+  if (!room) return;
+  snapshot();
+  state.rooms = state.rooms.filter((r) => r !== room);
+  editingRoom = null; pendingRoom = null; 矢印の塊 = null;
+  render(); autoSave();
+  // ★確認の画面は出さない。キーボードの手元に Ctrl+Z がある。
+  //   ただし、消したことと戻し方は必ず見せる(黙って消えると押し間違いに気づけない)。
+  showHint("部屋を削除しました（Ctrl+Z で戻せます）");
+}
+
+// 登録されている「点を置く細かさ」(1,2,3,4,6,8)はすべて 24 を割り切る。
+// 足し算で 1/3 などの小数が崩れると、隣の部屋と共有している壁の座標がずれて
+// 「同じ点」と見なされなくなる。もともと 1/24 の倍数だった値は、正確にそこへ戻す。
+function 刻みに戻す(v) {
+  const q = Math.round(v * 24);
+  return Math.abs(v * 24 - q) < 1e-6 ? q / 24 : v;
+}
+
+// 矢印キーを押しっぱなしにすると keydown が連打で来る。1回ごとに snapshot() すると
+// 戻すの履歴(50件)が押しっぱなし1回で埋まり、その前の操作に戻れなくなる。
+// → ひと続きの押し方を1つの「戻す」にまとめる。途中で別の操作が履歴を積んだら、別の塊にする。
+let 矢印の塊 = null;   // { room, 履歴の長さ, timer }
+function 選んだ部屋を動かす(dx, dy, 大きく) {
+  const room = 選んでいる部屋();
+  if (!room || (!dx && !dy)) return;
+  const 歩幅 = 大きく ? 1 : 1 / snapDenom;       // ★いまの「点を置く細かさ」に合わせる／Shift で1マス
+  const 続き = 矢印の塊 && 矢印の塊.room === room && 矢印の塊.履歴の長さ === history.length;
+  if (!続き) snapshot();
+  if (矢印の塊) clearTimeout(矢印の塊.timer);
+  矢印の塊 = { room, 履歴の長さ: history.length, timer: setTimeout(() => { 矢印の塊 = null; }, 800) };
+  room.points.forEach((p) => { p.gx = 刻みに戻す(p.gx + dx * 歩幅); p.gy = 刻みに戻す(p.gy + dy * 歩幅); });
+  // ★設備の位置だけは部屋に対する相対ではなく図面上の座標で持っている。一緒にずらさないと
+  //   部屋だけ動いて設備が元の場所に取り残される(建具は壁の番号と割合なので付いてくる)。
+  if (room.fixturePos) {
+    room.fixturePos = { gx: 刻みに戻す(room.fixturePos.gx + dx * 歩幅), gy: 刻みに戻す(room.fixturePos.gy + dy * 歩幅) };
+  }
+  render(); autoSave();
+}
+
+/** 何も選んでいないときの矢印 … 図面を動かす(1マス／Shift で5マス)。
+ *  ★矢印の向きに**図面が**動く。部屋を動かすときと向きを揃える。 */
+function 図面を矢印で動かす(dx, dy, 大きく) {
+  const px = (大きく ? 5 : 1) * BASE_CELL * view.scale;
+  view.offX += dx * px; view.offY += dy * px;
+  drawGrid(); render();
+}
+
 // 文字を打っている最中はショートカットを効かせない
 function 入力中か(el) {
   if (!el) return false;
@@ -3543,8 +3666,22 @@ document.addEventListener("keydown", (e) => {
     else if (editingRoom) { editingRoom = null; render(); e.preventDefault(); }
   } else if (e.key === "Enter") {
     if (drawingPoints.length >= 3) { e.preventDefault(); finishRoom(); }
-  } else if (e.key === "Backspace") {
-    if (drawingPoints.length > 0) { e.preventDefault(); undoLastPoint(); }
+  } else if (e.key === "Backspace" || e.key === "Delete") {
+    // 描いている途中の Backspace は、いままでどおり1点戻す。
+    // ★Delete は描いている途中では何もしない(描きかけの点を消すつもりで部屋が消えたら困る)。
+    if (drawingPoints.length > 0) {
+      if (e.key === "Backspace") { e.preventDefault(); undoLastPoint(); }
+    } else if (選んでいる部屋()) {
+      // ★Mac のキーボードの「delete」は Backspace を送る。両方で消せるようにする。
+      e.preventDefault(); 選んだ部屋を消す();
+    }
+  } else if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+    if (drawingPoints.length > 0) return;      // 描いている途中は触らない
+    e.preventDefault();
+    const dx = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+    const dy = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+    if (選んでいる部屋()) 選んだ部屋を動かす(dx, dy, e.shiftKey);
+    else 図面を矢印で動かす(dx, dy, e.shiftKey);
   } else if (e.key === "+" || e.key === "=") {
     e.preventDefault(); zoomStep(1.2);
   } else if (e.key === "-" || e.key === "_") {
@@ -4846,7 +4983,7 @@ function showFirstUseHintOnce() {
   const 指の機械 = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
   showHint(指の機械
     ? "何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます"
-    : "何もない場所をドラッグすると部屋を描けます。ホイールで拡大、スペースキーか中ボタンを押しながらドラッグで図面を動かせます", true);
+    : "何もない場所をドラッグすると部屋を描けます。ホイールで拡大、スペースキーか中ボタンを押しながらドラッグで図面を動かせます。部屋や建具は右クリックで編集できます", true);
 }
 
 $("btnProjects").addEventListener("click", () => {
