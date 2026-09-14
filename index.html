@@ -438,6 +438,10 @@
       <label>上り下りの向き</label>
       <button class="iconbtn" id="btnRotateStairDir">🔄 基準</button>
     </div>
+    <div class="field-row" id="stairCornerRow" style="display:none;">
+      <label>曲がり角</label>
+      <button class="iconbtn" id="btnStairCorner">踊り場</button>
+    </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteRoomInModal" style="display:none;">この部屋を削除</button>
       <button class="btn" id="btnChangeRoomType" style="display:none;">種類を変更</button>
@@ -1955,7 +1959,7 @@ function 階段の記号を描く(room) {
       // L字は両方の脚が既に形そのもので縦横決まっているため、軸の入れ替えは
       // 意味を持たない(90°/270°は180°/0°とそれぞれ同じ扱いにする=矢印の反転のみ)。
       // 矢印の経路も実際の2脚の中心線から求めるため、常に部屋の形状内に収まる。
-      drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed);
+      drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed, room.stairCorner === "mawari");
     } else {
       // コの字・U字等は矢印が直線1本の簡易近似のため、形状によっては部屋の
       // 凹み(輪郭の外)を通ることがある。踏み板はここで描くが、矢印は
@@ -2130,7 +2134,7 @@ function drawStairArrowIfNeeded(room) {
 // 探し、そこを折り返し地点として矢印を2区間に分けて曲げて描く。踏み板は外接矩形
 // 全体に格子状の線を敷いた上で部屋のポリゴン形状にクリップし、L字なりの形だけ
 // 表示されるようにする(簡易的な近似だが、どちら向きに折れているかは伝わる)。
-function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
+function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed, 回り段) {
   const eps = 0.5;
   const reflex = pts.find((p) =>
     p.x > minX + eps && p.x < maxX - eps && p.y > minY + eps && p.y < maxY - eps
@@ -2246,7 +2250,9 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
 
   // 段数(stepCount)を、各区間の実際の歩く向きの長さの比で振り分ける。
   // 折れ部の踊り場に何段ぶんかを先に取り置いてから、残りを長さ比で配分する。
-  const landingSteps = Math.min(3, Math.max(1, Math.round(stepCount * 0.15)));
+  // 回り段は曲がり角で3段(内側の角から30°・60°の線で分ける)。踊り場はこれまでどおり
+  const 角で回す = 回り段 && ふつうのL字;
+  const landingSteps = 角で回す ? 3 : Math.min(3, Math.max(1, Math.round(stepCount * 0.15)));
   const straightSteps = Math.max(2, stepCount - landingSteps);
   // ふつうのL字は踏み板を並べる長さ(まっすぐな所)の比で分ける。全長の比だと、短い脚ほど段が詰まって見える
   const 長さ1 = ふつうのL字 ? band1Length[1] - band1Length[0] : travelLen1;
@@ -2308,6 +2314,16 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   } else {
     const x = 踊り場の境(band2Length, reflex.x);
     dctx.beginPath(); dctx.moveTo(x, minY); dctx.lineTo(x, maxY); 階段の線を引く();
+  }
+  // 回り段：曲がり角の四角を、内側の角(反射頂点)から外の壁へ引く2本の線で3段に分ける。
+  //   線の先は四角の中だけに置く(★2026-09-12 に外接矩形の隅へ引いて部屋を斜めに横切った失敗がある)。
+  //   四角が長方形でも、縦横をそれぞれ四角の辺の長さで割った向きで 30°・60° にする(両脚に対して同じ見え方)
+  if (角で回す) {
+    const dx = 曲がり角のX - reflex.x, dy = 曲がり角のY - reflex.y;
+    const tan30 = Math.tan(Math.PI / 6);
+    [[1, tan30], [tan30, 1]].forEach(([u, v]) => {
+      dctx.beginPath(); dctx.moveTo(reflex.x, reflex.y); dctx.lineTo(reflex.x + dx * u, reflex.y + dy * v); 階段の線を引く();
+    });
   }
   dctx.restore();
 
@@ -4273,7 +4289,11 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
     }
     $("tatamiModal").dataset.stairRotation = existingRotation;
     $("btnRotateStairDir").textContent = stairRotationLabel(existingRotation);
+    // 曲がり角の描き方はL字だけで意味がある(長方形・U字では絵が変わらない)ので、L字のときだけ見せる
+    $("tatamiModal").dataset.stairCorner = src.stairCorner === "mawari" ? "mawari" : "odoriba";
+    $("btnStairCorner").textContent = 曲がり角の名前($("tatamiModal").dataset.stairCorner);
   }
+  $("stairCornerRow").style.display = isStair && $("tatamiModal").dataset.stairBent === "1" ? "flex" : "none";
 }
 $("btnChangeRoomType").addEventListener("click", () => {
   hideModal("tatamiModal");
@@ -4318,6 +4338,13 @@ function stairRotationLabel(rotation) {
   const 記号 = vertical ? (reversed ? "↓" : "↑") : (reversed ? "→" : "←");
   return `🔄 上る向き ${記号}`;
 }
+// L字の曲がり角：踊り場(平らな四角)か、回り段(内側の角から斜めの線で3段に分ける)か
+function 曲がり角の名前(v) { return v === "mawari" ? "回り段" : "踊り場"; }
+$("btnStairCorner").addEventListener("click", () => {
+  const d = $("tatamiModal").dataset;
+  d.stairCorner = d.stairCorner === "mawari" ? "odoriba" : "mawari";
+  $("btnStairCorner").textContent = 曲がり角の名前(d.stairCorner);
+});
 $("btnRotateStairDir").addEventListener("click", () => {
   const d = $("tatamiModal").dataset;
   const cur = parseInt(d.stairRotation, 10) || 0;
@@ -4330,6 +4357,11 @@ function confirmTatami() {
   const isStair = $("stepCountRow").style.display !== "none";
   const stepCount = isStair ? (parseInt($("tatamiModal").dataset.stepCount, 10) || DEFAULT_STEP_COUNT) : undefined;
   const stairRotation = isStair ? (parseInt($("tatamiModal").dataset.stairRotation, 10) || 0) : undefined;
+  const 曲がり角を合わせる = (r) => {
+    if (!isStair) return;
+    if ($("stairCornerRow").style.display === "none") return;   // L字でないときは触らない(形を戻したら元の描き方に戻る)
+    if ($("tatamiModal").dataset.stairCorner === "mawari") r.stairCorner = "mawari"; else delete r.stairCorner;
+  };
   if (editingRoom) {
     snapshot();
     editingRoom.tatami = v;
@@ -4337,12 +4369,14 @@ function confirmTatami() {
     // マス目からの再計算に黙って上書きされ、実測して入れた値が消えていた。
     editingRoom.tatamiManual = (v !== masuToTatami(polygonAreaMasu(editingRoom.points)));
     if (isStair) { editingRoom.stepCount = stepCount; editingRoom.stairRotation = stairRotation; }
+    曲がり角を合わせる(editingRoom);
     editingRoom = null;
   } else {
     snapshot();
     const room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
     if (v !== masuToTatami(polygonAreaMasu(pendingRoom.points))) room.tatamiManual = true;
     if (isStair) { room.stepCount = stepCount; room.stairRotation = stairRotation; }
+    曲がり角を合わせる(room);
     state.rooms.push(room);
     pendingRoom = null;
   }
