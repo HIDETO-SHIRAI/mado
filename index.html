@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-7">
+<meta name="app-version" content="2026-09-14-8">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -1783,101 +1783,86 @@ function drawRoomDecor(room) {
   });
 }
 
-// 部屋種別に応じて自動描画する設備の簡易線画(トイレ=タンク矩形+便座楕円、
-// 浴室=浴槽矩形+排水口、洗面所=カウンター矩形+ボウル楕円)。不動産図面の
-// 慣習(絵文字ではなく線画+略記)に合わせ、塗りなしのストロークのみで描く。
+// 部屋種別に応じて自動描画する設備の線画。不動産図面の慣習(絵文字ではなく線画+略記)に合わせ、
+// 塗りなしのストロークのみで描く(色・太さは控えめな灰色の細線)。
+// ★2026-09-14 白井さん「絵自体の質をもうちょい上げたい」→ 描き込みを増やした。試作3案
+//   (A 線だけ／B 白抜き／C 白抜き＋水色)を実データで並べ、白井さんが A を選んだ。
+//   以前はキッチン=四角と丸3つ、浴槽=角丸1つ、洗面台=四角と楕円で、何の設備か読み取りにくかった。
+// ★外枠(FIXTURE_SIZE_MASU の幅×奥行き)の中にすべて収める。はみ出すと、枠のつまみや
+//   「部屋からはみ出しています」の判定と、見た目がずれる。
+// 局所の座標：中心(cx,cy)、横=幅(ux)・縦=奥行き(uy)で伸びる、上(-y)が壁側。丸いもの(五徳・水栓・排水口)は ur で丸いまま。
 const FIXTURE_ROOM_KEYS = ["wc", "yokushitsu", "senmen", "kitchen"];
 function drawRoomFixture(typeKey, cx, cy, unit, sx = 1, sy = 1) {
-  // 幅(横)は ux、奥行き(縦)は uy で伸ばす。丸いもの(コンロ・水栓・排水口)は ur で丸いまま。
-  // sx = sy のときは、以前の unit * 倍率 と同じ絵になる。
   const ux = unit * sx, uy = unit * sy, ur = unit * Math.min(sx, sy);
-  dctx.save();
-  dctx.strokeStyle = "#5c6b78"; dctx.lineWidth = 1.2;
+  const d = dctx;
+  d.save();
+  d.strokeStyle = "#5c6b78"; d.lineJoin = "round";
+  const 太線 = () => { d.lineWidth = 1.2; d.stroke(); };   // 外形
+  const 細線 = () => { d.lineWidth = 1.0; d.stroke(); };   // 中の部品
+  const 角丸 = (x, y, w, h, r) => {
+    d.beginPath();
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    if (d.roundRect) d.roundRect(x, y, w, h, rr); else d.rect(x, y, w, h);
+  };
+  const 丸 = (x, y, r) => { d.beginPath(); d.arc(x, y, Math.max(0.1, r), 0, Math.PI * 2); };
+  const 楕円 = (x, y, rx, ry) => { d.beginPath(); d.ellipse(x, y, Math.max(0.1, rx), Math.max(0.1, ry), 0, 0, Math.PI * 2); };
+  const 線 = (x1, y1, x2, y2) => { d.beginPath(); d.moveTo(x1, y1); d.lineTo(x2, y2); };
   if (typeKey === "kitchen") {
-    // キッチンカウンター: シンクゾーンとコンロゾーンを仕切り線で分け、
-    // シンクには水栓、コンロは3口で描き、実際の設備配置に近づける
-    // システムキッチン 2550 × 650mm(I型)。壁一面に付く長いカウンター。
+    // システムキッチン 2550 × 650mm(I型)。左にシンク、右にコンロ。
     // ★2.55マスと書いていたのは mm とマスの取り違え。2550mm ÷ 910 = 2.80マス。
-    const w = ux * 2.80, h = uy * 0.71;
-    dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
-    const dividerX = cx - w / 2 + w * 0.42;
-    dctx.beginPath();
-    dctx.moveTo(dividerX, cy - h / 2);
-    dctx.lineTo(dividerX, cy + h / 2);
-    dctx.stroke();
-    const sinkW = w * 0.3, sinkH = h * 0.62;
-    const sinkX = cx - w / 2 + w * 0.06;
-    dctx.strokeRect(sinkX, cy - sinkH / 2, sinkW, sinkH);
-    dctx.beginPath();
-    dctx.moveTo(sinkX + sinkW / 2, cy - sinkH / 2);
-    dctx.lineTo(sinkX + sinkW / 2, cy - sinkH / 2 - h * 0.22);
-    dctx.stroke();
-    dctx.beginPath();
-    dctx.arc(sinkX + sinkW / 2, cy - sinkH / 2 - h * 0.22, ur * 0.025, 0, Math.PI * 2);
-    dctx.stroke();
-    [0.58, 0.75, 0.92].forEach((f) => {
-      dctx.beginPath();
-      dctx.arc(cx - w / 2 + w * f, cy, ur * 0.055, 0, Math.PI * 2);
-      dctx.stroke();
-    });
+    const W = ux * 2.80, D = uy * 0.71, L = cx - W / 2, T = cy - D / 2;
+    d.beginPath(); d.rect(L, T, W, D); 太線();                                   // カウンター
+    const sx0 = L + W * 0.07, sw = W * 0.30, sy0 = T + D * 0.24, sh = D * 0.62;
+    角丸(sx0, sy0, sw, sh, ur * 0.06); 太線();                                   // シンク(二重の角丸)
+    角丸(sx0 + ur * 0.035, sy0 + ur * 0.035, sw - ur * 0.07, sh - ur * 0.07, ur * 0.045); 細線();
+    丸(sx0 + sw * 0.72, sy0 + sh * 0.62, ur * 0.022); 細線();                     // 排水口
+    const fx = sx0 + sw / 2, fy = T + D * 0.12;
+    丸(fx, fy, ur * 0.03); 太線();                                               // 水栓(壁側)とその吐水口
+    線(fx, fy + ur * 0.03, fx, sy0 + sh * 0.28); 太線();
+    const gx0 = L + W * 0.62, gw = W * 0.31, gy0 = T + D * 0.12, gh = D * 0.76;
+    角丸(gx0, gy0, gw, gh, ur * 0.04); 細線();                                   // コンロの天板
+    const 口 = (x, y, r) => { 丸(x, y, r); 太線(); 丸(x, y, r * 0.45); 細線(); };   // 五徳の二重丸
+    口(gx0 + gw * 0.27, gy0 + gh * 0.66, ur * 0.10);
+    口(gx0 + gw * 0.73, gy0 + gh * 0.66, ur * 0.10);
+    口(gx0 + gw * 0.50, gy0 + gh * 0.26, ur * 0.075);
   } else if (typeKey === "wc") {
-    // 洋式便器: タンク+洗浄レバー+背もたれ部+しずく型の便座を分けて描く。
-    // 1マス=約90cm(半畳)を基準に、実際の洋式トイレの実寸比率
-    // (タンク幅約42cm・奥行約16cm、便座部分は幅約38cm・奥行約43cm、
-    // 合計奥行約64cm)に近づけて各部のサイズを調整している。
-    const tankW = ux * 0.50, tankH = uy * 0.20;
-    const tankY = cy - uy * 0.385;
-    dctx.strokeRect(cx - tankW / 2, tankY, tankW, tankH);
-    dctx.beginPath();
-    dctx.moveTo(cx + tankW / 2 - ux * 0.05, tankY + tankH * 0.3);
-    dctx.lineTo(cx + tankW / 2 + ux * 0.05, tankY + tankH * 0.3);
-    dctx.stroke();
-    const backW = ux * 0.44, backH = uy * 0.06;
-    dctx.strokeRect(cx - backW / 2, tankY + tankH, backW, backH);
-    const bowlCy = tankY + tankH + backH + uy * 0.245;
-    dctx.beginPath();
-    dctx.ellipse(cx, bowlCy, ux * 0.19, uy * 0.245, 0, 0, Math.PI * 2);
-    dctx.stroke();
-    dctx.beginPath();
-    dctx.moveTo(cx, bowlCy - uy * 0.24);
-    dctx.lineTo(cx, bowlCy - uy * 0.08);
-    dctx.stroke();
+    // 洋式便器 455 × 700mm(タンク込み)。壁側からタンク・付け根・卵形の便器(前がすぼまる)
+    const D = uy * 0.77, T = cy - D / 2;
+    const tw = ux * 0.44, th = uy * 0.17;
+    角丸(cx - tw / 2, T, tw, th, ur * 0.03); 太線();                              // タンク
+    線(cx + tw / 2 - ux * 0.02, T + th * 0.35, cx + tw / 2 + ux * 0.03, T + th * 0.35); 太線();   // 洗浄レバー(外枠の中まで)
+    const nw = ux * 0.30, nh = uy * 0.05;
+    d.beginPath(); d.rect(cx - nw / 2, T + th, nw, nh); 細線();                   // 付け根
+    const by0 = T + th + nh, by1 = T + D;
+    const rx = ux * 0.20, ry = (by1 - by0) / 2, bcy = (by0 + by1) / 2;
+    d.beginPath();
+    d.moveTo(cx - rx, by0 + ry * 0.35);
+    d.bezierCurveTo(cx - rx, by0 - ry * 0.05, cx + rx, by0 - ry * 0.05, cx + rx, by0 + ry * 0.35);
+    d.bezierCurveTo(cx + rx, by1 - ry * 0.25, cx + rx * 0.45, by1, cx, by1);
+    d.bezierCurveTo(cx - rx * 0.45, by1, cx - rx, by1 - ry * 0.25, cx - rx, by0 + ry * 0.35);
+    d.closePath(); 太線();                                                       // 便器
+    楕円(cx, bcy + ry * 0.18, rx * 0.58, ry * 0.58); 細線();                       // 便座の穴
   } else if (typeKey === "yokushitsu") {
-    // 浴槽 1400 × 800mm。角を丸め、足元側に排水口を描く(実物の販売図面と同じ)。
-    const w = ux * 1.54, h = uy * 0.88;
-    const r = ur * 0.1;
-    dctx.beginPath();
-    if (dctx.roundRect) dctx.roundRect(cx - w / 2, cy - h / 2, w, h, r);
-    else dctx.rect(cx - w / 2, cy - h / 2, w, h);
-    dctx.stroke();
-    // 洗い場との境(エプロン)を1本
-    dctx.beginPath();
-    dctx.moveTo(cx - w / 2 + ux * 0.12, cy - h / 2 + uy * 0.09);
-    dctx.lineTo(cx + w / 2 - ux * 0.12, cy - h / 2 + uy * 0.09);
-    dctx.stroke();
-    dctx.beginPath();
-    dctx.arc(cx + w * 0.34, cy + h * 0.18, ur * 0.05, 0, Math.PI * 2);
-    dctx.stroke();
+    // 浴槽 1400 × 800mm。縁と中の二重の角丸、足元側に排水口(実物の販売図面と同じ)
+    const W = ux * 1.54, D = uy * 0.88, L = cx - W / 2, T = cy - D / 2;
+    角丸(L, T, W, D, ur * 0.10); 太線();                                          // 浴槽の縁
+    const m = ur * 0.075;
+    角丸(L + m, T + m, W - m * 2, D - m * 2, ur * 0.20); 太線();                  // 中
+    丸(L + W - m - ur * 0.16, cy + D * 0.12, ur * 0.035); 細線();                  // 排水口
+    丸(L + W - m - ur * 0.16, cy + D * 0.12, ur * 0.015); 細線();
   } else if (typeKey === "senmen") {
-    // 単なる楕円だけでなく実際の洗面化粧台らしい見た目にする
-    const w = ux * 0.82, h = uy * 0.55;
-    dctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
-    dctx.beginPath();
-    dctx.ellipse(cx, cy, ux * 0.21, uy * 0.095, 0, 0, Math.PI * 2);
-    dctx.stroke();
-    dctx.beginPath();
-    dctx.arc(cx, cy, ur * 0.03, 0, Math.PI * 2);
-    dctx.stroke();
-    dctx.beginPath();
-    dctx.moveTo(cx, cy - h / 2);
-    dctx.lineTo(cx, cy - h / 2 - uy * 0.08);
-    dctx.stroke();
-    dctx.beginPath();
-    dctx.arc(cx, cy - h / 2 - uy * 0.08, ur * 0.025, 0, Math.PI * 2);
-    dctx.stroke();
-    dctx.strokeRect(cx - w * 0.4, cy - h / 2 - uy * 0.22, w * 0.8, uy * 0.12);
+    // 洗面化粧台 750 × 500mm。カウンター＋二重の楕円のボウル、壁側に水栓
+    const W = ux * 0.82, D = uy * 0.55, L = cx - W / 2, T = cy - D / 2;
+    角丸(L, T, W, D, ur * 0.03); 太線();                                          // カウンター
+    const by = cy + D * 0.08;
+    楕円(cx, by, ux * 0.27, uy * 0.17); 太線();                                   // ボウル(二重)
+    楕円(cx, by, ux * 0.21, uy * 0.125); 細線();
+    丸(cx, by + uy * 0.03, ur * 0.02); 細線();                                    // 排水口
+    const fy = T + D * 0.13;
+    丸(cx, fy, ur * 0.03); 太線();                                               // 水栓とその吐水口
+    線(cx, fy + ur * 0.03, cx, by - uy * 0.10); 太線();
   }
-  dctx.restore();
+  d.restore();
 }
 
 // 階段記号: 4頂点(単純な矩形)なら外接矩形の長い方向を上り方向とみなし、短い
