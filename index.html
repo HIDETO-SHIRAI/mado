@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-2">
+<meta name="app-version" content="2026-09-14-3">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -141,6 +141,13 @@
     display: flex; flex-direction: column; align-items: center; gap: 3px;
   }
   .tool .em { font-size: 19px; }
+  /* 狭い画面では短い名前(ボタンの名前を合わせる() が #toolbar に narrow を付ける)。
+     ★長い名前のままだと「全階ま/とめて/保存」と3行に折れて窮屈だった。4文字が1行に収まるよう少し詰める */
+  .tool .lbl-short { display: none; }
+  #toolbar.narrow { gap: 3px; padding: 6px 4px; }
+  #toolbar.narrow .tool { font-size: 10px; letter-spacing: -0.03em; padding: 9px 0; }
+  #toolbar.narrow .tool .lbl-full { display: none; }
+  #toolbar.narrow .tool .lbl-short { display: inline; }
   .tool.active { background: var(--accent); color: #fff; }
 
   /* ---- モーダル共通 ---- */
@@ -351,15 +358,15 @@
   </div>
 
   <div id="toolbar">
-    <button class="tool active" data-tool="wall"><span class="em">✏️</span>描く/編集</button>
+    <button class="tool active" data-tool="wall"><span class="em">✏️</span><span class="lbl-full">描く/編集</span><span class="lbl-short">描く</span></button>
     <button class="tool" data-tool="door"><span class="em">🚪</span>建具</button>
-    <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span id="colorSchemeLabel">配色:カラー</span></button>
-    <button class="tool" id="btnExport"><span class="em">🖼️</span>画像で保存</button>
-    <button class="tool" id="btnExportTransparent"><span class="em">🎞️</span>透過で保存</button>
-    <button class="tool" id="btnCopyTransparent" style="display:none" title="透過の画像をコピーして、Excel などに Ctrl+V で貼る"><span class="em">📋</span>透過でコピー</button>
-    <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span>全階まとめて保存</button>
-    <button class="tool" id="btnExportDrive"><span class="em">☁️</span>ドライブに保存</button>
-    <button class="tool" id="btnSave"><span class="em">💾</span>この階を保存</button>
+    <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span class="lbl-full" id="colorSchemeLabel">配色:カラー</span><span class="lbl-short" id="colorSchemeLabelShort">カラー</span></button>
+    <button class="tool" id="btnExport"><span class="em">🖼️</span><span class="lbl-full">画像で保存</span><span class="lbl-short">画像保存</span></button>
+    <button class="tool" id="btnExportTransparent"><span class="em">🎞️</span><span class="lbl-full">透過で保存</span><span class="lbl-short">透過保存</span></button>
+    <button class="tool" id="btnCopyTransparent" style="display:none" title="透過の画像をコピーして、Excel などに Ctrl+V で貼る"><span class="em">📋</span><span class="lbl-full">透過でコピー</span><span class="lbl-short">コピー</span></button>
+    <button class="tool" id="btnExportAllFloors"><span class="em">🏢</span><span class="lbl-full">全階まとめて保存</span><span class="lbl-short">全階保存</span></button>
+    <button class="tool" id="btnExportDrive"><span class="em">☁️</span><span class="lbl-full">ドライブに保存</span><span class="lbl-short">ドライブ</span></button>
+    <button class="tool" id="btnSave"><span class="em">💾</span><span class="lbl-full">この階を保存</span><span class="lbl-short">保存</span></button>
   </div>
 </div>
 
@@ -4351,6 +4358,7 @@ btnSnapMode.addEventListener("click", () => { renderSnapModeGrid(); showModal("s
 /* ---------------- 配色モード(カラー/シンプル)の切替 ---------------- */
 function updateColorSchemeButton() {
   $("colorSchemeLabel").textContent = colorScheme === "simple" ? "配色:シンプル" : "配色:カラー";
+  $("colorSchemeLabelShort").textContent = colorScheme === "simple" ? "シンプル" : "カラー";   // 狭い画面用
 }
 $("btnColorScheme").addEventListener("click", () => {
   setColorScheme(colorScheme === "simple" ? "color" : "simple");
@@ -5035,6 +5043,25 @@ if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem
     && !(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) {
   $("btnCopyTransparent").style.display = "";
 }
+/* 狭い画面では下のボタンを短い名前にする … 2026-09-14 白井さん「画面の大きさとかも考慮して」。
+   ★機械の種類でも窓の幅でもなく「ボタン1個に使える幅」で決める。パソコンは透過でコピーがあって
+     9個、スマホは8個と数が違うので、窓の幅で線を引くとずれる。
+   ★72px 未満で短くする。それ以上なら長い名前(いちばん長い「全階まとめて保存」)でも2行に収まる。
+     タブレットは縦でも1個95px前後あるので今のまま(白井さん「タブレットは今のまま」)。
+   ★測るときは広いときの余白(左右8px・間6px)で計算する。詰めたあとの余白で測ると、詰めた途端に
+     「広い」と判定されて行ったり来たりする。 */
+function ボタンの名前を合わせる() {
+  const tb = $("toolbar");
+  if (!tb) return;
+  const n = [...tb.children].filter((b) => b.style.display !== "none").length;
+  if (!n) return;
+  const 幅 = tb.clientWidth || document.documentElement.clientWidth;
+  tb.classList.toggle("narrow", (幅 - 16 - (n - 1) * 6) / n < 72);
+}
+window.addEventListener("resize", ボタンの名前を合わせる);
+// ログイン画面から切り替わって帯が出たとき・画面を回したときにも測り直す
+if (window.ResizeObserver) new ResizeObserver(ボタンの名前を合わせる).observe($("toolbar"));
+ボタンの名前を合わせる();
 $("btnCopyTransparent").addEventListener("click", async () => {
   if (state.rooms.length === 0) { showHint("この階にはまだ部屋がありません"); return; }
   try {
