@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-4">
+<meta name="app-version" content="2026-09-14-5">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -2228,11 +2228,19 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
     : [range[0], Math.max(range[1] - landing, range[0])]);
   // band1の踏み板を並べる「長さ方向」の範囲(歩く向きがXならX、Yなら元々のband1Y)
   // ★band1Y・band2X の範囲は反射頂点がちょうど片端なので、近い端の判定で同点にならない(従来どおり)
-  const band1Length = band1IsWide
+  // ★横長の脚＋縦長の脚(ふつうのL字)は、曲がり角の四角(両脚が重なる所)をそのまま踊り場にする。
+  //   踏み板は欠けた角の側から反射頂点までの「まっすぐな所」だけに並べる。
+  //   2026-09-14 まで踊り場を「短い脚の長さ×0.3」だけ詰めていたため、曲がり角の四角(1マスなら1マス)と
+  //   ずれ、両脚の踏み板が角の中へ0.4マスずつはみ出して格子になっていた(白井さん「L字にすると角が変」)。
+  const ふつうのL字 = band1IsWide && band2IsTall;
+  const 並べる = (a, b) => (a <= b ? [a, b] : [b, a]);
+  const band1Length = ふつうのL字 ? 並べる(missing.x, reflex.x)
+    : band1IsWide
     ? 曲がり角側を詰める([minX, maxX], 曲がり角のX)
     : shrinkLengthNearReflex(band1Y, reflex.y);
   // band2の踏み板を並べる「長さ方向」の範囲
-  const band2Length = band2IsTall
+  const band2Length = ふつうのL字 ? 並べる(missing.y, reflex.y)
+    : band2IsTall
     ? 曲がり角側を詰める([minY, maxY], 曲がり角のY)
     : shrinkLengthNearReflex(band2X, reflex.x);
 
@@ -2240,8 +2248,11 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed) {
   // 折れ部の踊り場に何段ぶんかを先に取り置いてから、残りを長さ比で配分する。
   const landingSteps = Math.min(3, Math.max(1, Math.round(stepCount * 0.15)));
   const straightSteps = Math.max(2, stepCount - landingSteps);
-  const totalLen = travelLen1 + travelLen2 || 1;
-  const legTreads1 = Math.max(1, Math.round(straightSteps * (travelLen1 / totalLen)));
+  // ふつうのL字は踏み板を並べる長さ(まっすぐな所)の比で分ける。全長の比だと、短い脚ほど段が詰まって見える
+  const 長さ1 = ふつうのL字 ? band1Length[1] - band1Length[0] : travelLen1;
+  const 長さ2 = ふつうのL字 ? band2Length[1] - band2Length[0] : travelLen2;
+  const totalLen = 長さ1 + 長さ2 || 1;
+  const legTreads1 = Math.max(1, Math.round(straightSteps * (長さ1 / totalLen)));
   const legTreads2 = Math.max(1, straightSteps - legTreads1);
   dctx.save();
   dctx.beginPath();
