@@ -1809,9 +1809,49 @@ function 室名の文字の大きさ(areaPx) {
 }
 function 室名の書体(size) { return `bold ${size}px -apple-system, sans-serif`; }
 
+// 細長い部屋は縦書き。★2026-09-28 レインズの図面では、トイレ・クローゼット・バルコニー・物入のような
+//   細長い所は縦書き(#0・#1・#99・#101)。横書きのままだと、文字を縮めても部屋の幅に収まらず壁に乗っていた。
+//   名前だけの室名(帖数を書かない)で、縦長の部屋で、縦に書くほうが大きく書けるときだけ縦にする。
+//   英数字(UP・DN・WIC・PS など)と階段は横のまま。戻り値は縦に書くときの文字の大きさ、横なら 0。
+const 縦書きの字の送り = 1.08;   // 字の高さに対する、次の字までの間隔
+function 室名を縦に書く大きさ(room) {
+  const type = roomType(room);
+  if (room.typeKey === "kaidan" || !(type.hideTatami || type.noLabel)) return 0;
+  const 名前 = 室名の名前(room);
+  const 字 = [...名前];
+  if (字.length < 2 || /[A-Za-z0-9]/.test(名前)) return 0;
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const W = Math.max(...xs) - Math.min(...xs) - 12, H = Math.max(...ys) - Math.min(...ys) - 12;
+  if (!(W > 0 && H > W * 1.3)) return 0;                          // 縦長の部屋だけ
+  const size = 室名の文字の大きさ(polygonScreenArea(room.points));
+  const 最小 = 10 + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+  dctx.save(); dctx.font = 室名の書体(size); const 横幅 = dctx.measureText(名前).width; dctx.restore();
+  const 横 = Math.min(size, (size * W) / 横幅, H);
+  const 縦 = Math.min(size, W, H / (字.length * 縦書きの字の送り));
+  return 縦 >= Math.max(最小, 横 * 1.15) ? Math.floor(縦) : 0;
+}
+// 縦書きで、向きを90度回して書く字(長音・ダッシュ・括弧)
+const 縦書きで回す字 = /[ー－\-〜~（）()「」]/;
+function 室名を縦に描く(字, x, y, size) {
+  const 送り = size * 縦書きの字の送り;
+  字.forEach((c, i) => {
+    const cy = y + (i - (字.length - 1) / 2) * 送り;
+    if (縦書きで回す字.test(c)) {
+      dctx.save(); dctx.translate(x, cy); dctx.rotate(Math.PI / 2);
+      dctx.strokeText(c, 0, 0); dctx.fillText(c, 0, 0);
+      dctx.restore();
+    } else {
+      dctx.strokeText(c, x, cy); dctx.fillText(c, x, cy);
+    }
+  });
+}
+
 function 室名の枠の大きさ(room) {
   const type = roomType(room);
   const 面積 = polygonScreenArea(room.points);
+  const 縦 = 室名を縦に書く大きさ(room);
+  if (縦) return { w: 縦 + 4, h: [...室名の名前(room)].length * 縦 * 縦書きの字の送り + 2 };
   const size = 室名の文字の大きさ(面積);
   const 名前 = 室名の名前(room);
   const 行 = (type.hideTatami || type.noLabel) ? [名前] : (面積 < 1600 ? [畳の文字(room)] : [名前, 畳の文字(room)]);
@@ -2254,6 +2294,21 @@ function drawRoomDecor(room) {
   }
 
   const startSize = 室名の文字の大きさ(areaPx);
+  // 細長い部屋は縦書き(室名を縦に書く大きさ)。ここの幅・高さに合わせて、さらに縮めることがある
+  const 縦の大きさ = 室名を縦に書く大きさ(room);
+  if (縦の大きさ) {
+    const 字 = [...室名の名前(room)];
+    const 最小 = 10 + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+    const size = Math.max(最小, Math.floor(Math.min(縦の大きさ, maxAllowed, maxAllowedH / (字.length * 縦書きの字の送り))));
+    dctx.font = 室名の書体(size);
+    dctx.textAlign = "center"; dctx.textBaseline = "middle";
+    dctx.lineWidth = 3;
+    dctx.strokeStyle = "rgba(255,255,255,.9)";
+    dctx.fillStyle = "#1c2733";
+    室名を縦に描く(字, labelX, labelY, size);
+    if (!isExportRender) 室名の描いた枠.set(room, { x: labelX, y: labelY, w: size, h: 字.length * size * 縦書きの字の送り });
+    return;
+  }
   let result;
   if (type.hideTatami || type.noLabel) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
