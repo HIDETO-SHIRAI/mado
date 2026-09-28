@@ -279,6 +279,19 @@
   .project-item .meta .sub { font-size: 12px; color: var(--muted); }
   .project-item button { border: none; background: #eef1f5; border-radius: 8px; padding: 8px 10px; font-size: 12px; flex-shrink: 0; }
 
+  /* 道具「線」の種類の帯。下の合計の表示より少し上、真ん中 */
+  .line-kind-bar {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 50px; display: flex; gap: 4px; z-index: 5;
+    background: rgba(255,255,255,.96); padding: 4px; border-radius: 12px; box-shadow: 0 1px 6px rgba(0,0,0,.18);
+  }
+  .line-kind-bar button {
+    border: none; background: #eef1f5; color: var(--text); border-radius: 8px; padding: 8px 11px;
+    font-size: 12px; font-weight: 700; white-space: nowrap;
+  }
+  .line-kind-bar button.on { background: var(--accent); color: #fff; }
+  .line-kind-bar .l-short { display: none; }
+  /* 狭い画面は短い名前。合計の表示が2行になるので帯も少し上へ(幅320pxで重なった) */
+  @media (max-width: 400px) { .line-kind-bar { bottom: 74px; } .line-kind-bar .l-full { display: none; } .line-kind-bar .l-short { display: inline; } }
   #hint {
     position: absolute; top: 8px; left: 8px;
     background: rgba(28,39,51,.85); color: #fff; font-size: 12px;
@@ -362,6 +375,13 @@
     <canvas id="grid"></canvas>
     <canvas id="draw"></canvas>
     <div id="hint" style="opacity:0"></div>
+    <!-- 道具「線」のとき、引く種類を選ぶ帯(壁・腰壁/カウンター・塀/フェンス・柱) -->
+    <div id="lineKindBar" class="line-kind-bar" style="display:none">
+      <button data-kind="wall">壁</button>
+      <button data-kind="low"><span class="l-full">腰壁・カウンター</span><span class="l-short">腰壁</span></button>
+      <button data-kind="fence"><span class="l-full">塀・フェンス</span><span class="l-short">塀</span></button>
+      <button data-kind="pillar">柱</button>
+    </div>
     <div id="compass" title="ドラッグで方位を回転できます">
       <div id="compassRotor"><span class="arrow">▲</span><span>N</span></div>
     </div>
@@ -530,6 +550,25 @@
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteLine">この線を消す</button>
       <button class="btn primary" id="btnCloseLine">これで確定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 柱の画面 -->
+<div class="modal-overlay" id="pillarModal">
+  <div class="modal">
+    <h2>柱</h2>
+    <div class="field-row">
+      <label>大きさ（四角の一辺）</label>
+      <div class="stepper">
+        <button id="pillarMinus">−</button>
+        <div class="val"><span id="pillarSizeValue">230</span><br><small>mm</small></div>
+        <button id="pillarPlus">＋</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn danger" id="btnDeletePillar">この柱を消す</button>
+      <button class="btn primary" id="btnClosePillar">これで確定</button>
     </div>
   </div>
 </div>
@@ -1515,6 +1554,7 @@ function render() {
   for (const room of state.rooms) drawRoomFill(room);
   for (const room of state.rooms) drawRoomWalls(room, openings);
   for (const room of state.rooms) 線を描く(room);   // 線(壁・腰壁/カウンター・塀/フェンス)
+  for (const room of state.rooms) 柱を描く(room);   // 柱
   for (const room of state.rooms) drawRoomDoors(room);
   // 外開きの開き戸とU字階段の矢印は、部屋のクリップの外から描く必要がある
   // (外開きは隣室側へ、U字の矢印は部屋の凹みを通ることがあるため)。
@@ -1538,6 +1578,7 @@ function render() {
 
   // なぞっている途中の線
   if (!isExportRender && 線を引く) 線を描く一本({ ...線を引く, kind: 線の種類 });
+  if (!isExportRender && 柱を置く) 柱を描く一本({ ...柱を置く.g, size: 柱の既定_マス }, true);
   // 描きかけの点線と点。まだ部屋になっていないので書き出しには入れない
   if (!isExportRender && drawingPoints.length > 0) {
     dctx.beginPath();
@@ -2033,6 +2074,7 @@ function 室名が避けるもの(room) {
     if (枠) 設備.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ix, iy]) => 枠.点(ix * 枠.hw, iy * 枠.hd)));
   }
   置き場の種類.forEach((t) => { const q = 置き場の四角(room, t.key); if (q) 設備.push(q.点); });   // 洗・冷の印
+  (room.pillars || []).forEach((q) => { if (柱か(q)) 設備.push(柱の四角(q).点); });   // 柱
   (room.lines || []).forEach((l) => {   // 部屋の中の線(壁・腰壁など)。線の太さ＋少しの帯
     if (!線か(l)) return;
     const a = gridToScreen(l.a.gx, l.a.gy), b = gridToScreen(l.b.gx, l.b.gy);
@@ -2174,7 +2216,7 @@ const 室名の位置の控え = new WeakMap();
 function 室名の自動の位置(room) {
   if (room.typeKey === "kaidan") return 階段の室名の位置(room);
   const 倍率の段 = Math.round(Math.log(view.scale) / Math.log(1.05));
-  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge, room.showDims, room.lines,
+  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge, room.showDims, room.lines, room.pillars,
     room.fixturePos, room.fixtureSize, room.fixtureRotation, roomHasFixture(room), 倍率の段, isExportRender]);
   let 控え = 室名の位置の控え.get(room);
   if (!控え || 控え.key !== key) {
@@ -3380,6 +3422,7 @@ function 線の種類の絵(key) {
     t.room.lines[t.i].kind = k.key;
     線の種類 = k.key;   // 次に引く線もこの種類
     線の種類のボタンを合わせる();
+    線の帯を合わせる();
     render(); autoSave();
   });
   $("lineKindGrid").appendChild(btn);
@@ -3397,6 +3440,13 @@ $("btnDeleteLine").addEventListener("click", () => {
 });
 // 道具「線」で押したとき(handleSingleTouchStart から)
 function 線の道具で押した(sx, sy) {
+  const 柱 = 柱に当たるか(sx, sy);
+  if (柱) {
+    const q = 柱.room.pillars[柱.i];
+    柱ドラッグ = { room: 柱.room, i: 柱.i, 始めの画面: { x: sx, y: sy }, 始めの位置: { gx: q.gx, gy: q.gy },
+      動き出した: false, 始めのJSON: JSON.stringify(state.rooms), 積んだ: false };
+    return;
+  }
   const hit = 線に当たるか(sx, sy);
   if (hit) {
     const l = hit.room.lines[hit.i];
@@ -3405,10 +3455,88 @@ function 線の道具で押した(sx, sy) {
     return;
   }
   if (!state.rooms.length) { showHint("線は部屋に付けて持つので、先に部屋を1つ描いてください"); return; }
+  if (線の種類 === "pillar") { 柱を置く = { g: snapToExistingVertex(screenToGridSnapped(sx, sy)) }; render(); return; }
   const a = snapToExistingVertex(screenToGridSnapped(sx, sy));
   線を引く = { a, b: { ...a } };
   render();
 }
+
+// ---- 柱 ------------------------------------------------------------------------
+// ★2026-09-28 白井さん「仕切りや柱等」(壁を書きたいとき)。道具「線」の帯で「柱」を選び、タップした所に四角い柱を置く。
+//   部屋の角の近くなら角に吸い付く。room.pillars = [{ gx, gy, size }](真ん中・一辺、マス)。部屋に持たせる(線と同じ理由)。
+const 柱の既定_マス = 0.25, 柱の最小_マス = 0.08, 柱の最大_マス = 1.2;   // 約230mm・75mm・1090mm
+function 柱か(q) { return !!q && [q.gx, q.gy, q.size].every(Number.isFinite) && q.size > 0; }
+function 柱の四角(q) {   // 画面の { L, T, R, B, 点 }
+  const c = gridToScreen(q.gx, q.gy), h = (q.size / 2) * BASE_CELL * view.scale;
+  return { L: c.x - h, T: c.y - h, R: c.x + h, B: c.y + h, 点: [{ x: c.x - h, y: c.y - h }, { x: c.x + h, y: c.y - h }, { x: c.x + h, y: c.y + h }, { x: c.x - h, y: c.y + h }] };
+}
+function 柱を描く一本(q, 薄く) {
+  const k = 柱の四角(q);
+  dctx.save();
+  dctx.globalAlpha = 薄く ? 0.5 : 1;
+  dctx.fillStyle = 壁の色();
+  dctx.fillRect(k.L, k.T, k.R - k.L, k.B - k.T);
+  dctx.restore();
+}
+function 柱を描く(room) { (room.pillars || []).forEach((q) => { if (柱か(q)) 柱を描く一本(q); }); }
+function 柱に当たるか(sx, sy) {
+  let best = null;
+  state.rooms.forEach((room) => (room.pillars || []).forEach((q, i) => {
+    if (!柱か(q)) return;
+    const k = 柱の四角(q), m = Math.max(6, 14 - (k.R - k.L) / 2);   // 小さい柱も指でつかめるように
+    if (sx >= k.L - m && sx <= k.R + m && sy >= k.T - m && sy <= k.B + m) {
+      const d = Math.hypot(sx - (k.L + k.R) / 2, sy - (k.T + k.B) / 2);
+      if (!best || d < best.距離) best = { room, i, 距離: d };
+    }
+  }));
+  return best;
+}
+let 柱を置く = null;    // { g } タップして置こうとしている所(指を動かせば動く)
+let 柱ドラッグ = null;  // { room, i, 始めの画面, 始めの位置, 動き出した, 始めのJSON, 積んだ }
+let 柱の画面の柱 = null, 柱の画面で積んだ = false;
+function 柱の画面を開く(room, i) {
+  柱の画面の柱 = { room, i };
+  柱の画面で積んだ = false;
+  柱の大きさを出す();
+  showModal("pillarModal");
+}
+function 柱の大きさを出す() {
+  const t = 柱の画面の柱, q = t && t.room.pillars && t.room.pillars[t.i];
+  if (q) $("pillarSizeValue").textContent = (Math.round((q.size * 910) / 5) * 5).toLocaleString("ja-JP");
+}
+function 柱の大きさを変える(差) {
+  const t = 柱の画面の柱, q = t && t.room.pillars && t.room.pillars[t.i];
+  if (!q) return;
+  if (!柱の画面で積んだ) { snapshot(); 柱の画面で積んだ = true; }
+  q.size = Math.max(柱の最小_マス, Math.min(柱の最大_マス, Math.round((q.size + 差) * 100) / 100));
+  柱の大きさを出す();
+  render(); autoSave();
+}
+$("pillarMinus").addEventListener("click", () => 柱の大きさを変える(-0.05));
+$("pillarPlus").addEventListener("click", () => 柱の大きさを変える(0.05));
+$("btnClosePillar").addEventListener("click", () => { hideModal("pillarModal"); 柱の画面の柱 = null; });
+$("btnDeletePillar").addEventListener("click", () => {
+  const t = 柱の画面の柱;
+  hideModal("pillarModal"); 柱の画面の柱 = null;
+  if (!t || !t.room.pillars || !t.room.pillars[t.i]) return;
+  if (!柱の画面で積んだ) snapshot();
+  t.room.pillars.splice(t.i, 1);
+  if (!t.room.pillars.length) delete t.room.pillars;
+  render(); autoSave();
+  showHint("柱を消しました（戻すで元に戻せます）");
+});
+// 道具「線」の帯
+function 線の帯を合わせる() {
+  const bar = $("lineKindBar");
+  bar.style.display = currentTool === "line" ? "flex" : "none";
+  bar.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.kind === 線の種類));
+}
+$("lineKindBar").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+  線の種類 = b.dataset.kind;
+  線の帯を合わせる();
+  showHint(線の種類 === "pillar" ? "タップした所に柱を置きます(部屋の角の近くなら角に)。柱はタップで大きさを変える・消す、ドラッグで動かせます"
+    : "なぞった所に線を引きます。線はタップで種類を変える・消す、ドラッグで動かせます");
+}));
 
 // ---- 角を消す・足す ------------------------------------------------------------
 // ★2026-09-28 白井さん「壁とか自由に消せたり、書けたりすると嬉しい」(描き間違いを直したい)。
@@ -4433,7 +4561,9 @@ function startPinch() {
   if (室名ドラッグ && !室名ドラッグ.動き出した) 室名ドラッグ = null;
   角を足すドラッグ = null;
   線を引く = null;
+  柱を置く = null;
   if (線ドラッグ && !線ドラッグ.動き出した) 線ドラッグ = null;
+  if (柱ドラッグ && !柱ドラッグ.動き出した) 柱ドラッグ = null;
   if (置き場ドラッグ && !置き場ドラッグ.動き出した) 置き場ドラッグ = null;
   if (外の文字ドラッグ && !外の文字ドラッグ.動き出した) 外の文字ドラッグ = null;
   const pts = [...pointers.values()];
@@ -4683,6 +4813,28 @@ drawCanvas.addEventListener("pointermove", (e) => {
     return;
   }
 
+  if (柱を置く && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    柱を置く.g = snapToExistingVertex(screenToGridSnapped(e.clientX - rect.left, e.clientY - rect.top));
+    render();
+    return;
+  }
+  if (柱ドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 柱ドラッグ;
+    if (!d.動き出した) {
+      if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 6) return;
+      d.動き出した = true;
+    }
+    const q = d.room.pillars && d.room.pillars[d.i];
+    if (!q) return;
+    if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+    const g = snapToExistingVertex(screenToGridSnapped(sx, sy));   // 指の所へ(角・細かさに吸い付く)
+    q.gx = g.gx; q.gy = g.gy;
+    render();
+    return;
+  }
   if (線を引く && pointers.size === 1) {
     const rect = drawCanvas.getBoundingClientRect();
     線を引く.b = 線の先(線を引く.a, e.clientX - rect.left, e.clientY - rect.top);
@@ -4998,6 +5150,25 @@ function finalizeActiveDrags() {
     壁ドラッグ = null;
     render();
     if (d.積んだ) { autoSave(); 壁を動かしたあとの知らせ(d, true); }
+    return true;
+  }
+  if (柱を置く) {
+    const g = 柱を置く.g;
+    柱を置く = null;
+    const room = 線を持たせる部屋(g, g);
+    if (!room) { render(); return true; }
+    snapshot();
+    room.pillars = [...(room.pillars || []).filter(柱か), { gx: g.gx, gy: g.gy, size: 柱の既定_マス }];
+    render(); autoSave();
+    showHint("柱を置きました。タップで大きさを変える・消す、ドラッグで動かせます");
+    return true;
+  }
+  if (柱ドラッグ) {
+    const d = 柱ドラッグ;
+    柱ドラッグ = null;
+    if (!d.動き出した) { 柱の画面を開く(d.room, d.i); return true; }
+    render();
+    if (d.積んだ) autoSave();
     return true;
   }
   if (線を引く) {
@@ -5720,6 +5891,10 @@ function 選んだ部屋を動かす(dx, dy, 大きく) {
   if (room.fixturePos) {
     room.fixturePos = { gx: 刻みに戻す(room.fixturePos.gx + dx * 歩幅), gy: 刻みに戻す(room.fixturePos.gy + dy * 歩幅) };
   }
+  // 柱も一緒に
+  (room.pillars || []).forEach((q) => {
+    if (柱か(q)) { q.gx = 刻みに戻す(q.gx + dx * 歩幅); q.gy = 刻みに戻す(q.gy + dy * 歩幅); }
+  });
   // 線も一緒に
   (room.lines || []).forEach((l) => {
     if (!線か(l)) return;
@@ -6656,10 +6831,11 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; 角を足すドラッグ = null; 線を引く = null; 線ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; 角を足すドラッグ = null; 線を引く = null; 線ドラッグ = null; 柱を置く = null; 柱ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
-    if (currentTool === "line") showHint("なぞった所に線が引けます(壁・腰壁/カウンター・塀/フェンス)。線をタップすると種類を変える・消す、ドラッグで動かす、端の丸で伸び縮みできます", true);
+    if (currentTool === "line") showHint("下の帯で種類を選び、なぞった所に線を引きます(柱はタップした所に置きます)。線・柱はタップで直す・消す、ドラッグで動かせます", true);
+    線の帯を合わせる();
     render();
   });
 });
@@ -6790,6 +6966,11 @@ function buildExportCanvas(scale, transparent) {
   state.rooms.forEach((room) => room.points.forEach((p) => {
     minGx = Math.min(minGx, p.gx); maxGx = Math.max(maxGx, p.gx);
     minGy = Math.min(minGy, p.gy); maxGy = Math.max(maxGy, p.gy);
+  }));
+  state.rooms.forEach((room) => (room.pillars || []).forEach((q) => {
+    if (!柱か(q)) return;
+    minGx = Math.min(minGx, q.gx - q.size); maxGx = Math.max(maxGx, q.gx + q.size);
+    minGy = Math.min(minGy, q.gy - q.size); maxGy = Math.max(maxGy, q.gy + q.size);
   }));
   // 線(塀・フェンスは建物の外にあることが多い)
   state.rooms.forEach((room) => (room.lines || []).forEach((l) => {
