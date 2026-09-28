@@ -221,6 +221,9 @@
      区別し、寸法変更と位置移動を取り違えないようにする(実機フィードバックで指摘)。 */
   .stepper-pos button { background: #e3ecfd; color: var(--accent); }
   /* 室名の位置：4つの矢印と「自動」を1行に収める(幅375pxのスマホで折り返さないよう少し小さく) */
+  .stepper.okiba-btns { gap: 6px; }
+  .stepper.okiba-btns .iconbtn { width: auto; padding: 0 10px; font-size: 13px; height: 38px; }
+  .stepper.okiba-btns .iconbtn.on { background: #e3ecfd; color: var(--accent); font-weight: 700; }
   .stepper.label-pos { gap: 6px; }
   .stepper.label-pos button { width: 34px; height: 34px; font-size: 14px; }
   .stepper.label-pos #btnLabelPosReset { width: auto; padding: 0 9px; font-size: 13px; background: #eef1f5; color: var(--text); }
@@ -474,6 +477,13 @@
     <div class="field-row" id="fixtureSizeRow" style="display:none;">
       <label>設備の大きさ<br><small id="fixtureSizeText">幅 − × 奥行き − mm</small></label>
       <button class="iconbtn" id="btnFixtureReset">自動に戻す</button>
+    </div>
+    <div class="field-row" id="okibaRow" style="display:none;">
+      <label>置き場の印<br><small>図面でドラッグして動かせます</small></label>
+      <div class="stepper okiba-btns">
+        <button class="iconbtn" id="btnWasher">洗 なし</button>
+        <button class="iconbtn" id="btnFridge">冷 なし</button>
+      </div>
     </div>
     <!-- 室名の位置。図面で文字をドラッグしても動かせるが、ドラッグが苦手な人のためにボタンでも(建具の◀▶と同じ考え方) -->
     <div class="field-row" id="labelPosRow" style="display:none;">
@@ -1224,6 +1234,7 @@ let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の�
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
 let 設備の大きさドラッグ = null; // 設備の枠のつまみ(角・辺)を引っ張って大きさを変えている間の状態
+let 置き場ドラッグ = null; // 選んだ部屋の洗・冷の印をつかんでいる間(動かさずに離したら、ただのタップ)
 let 室名ドラッグ = null; // 選んだ部屋の室名の文字をつかんでいる間の状態(動かさずに離したら、ただのタップ)
 let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
 let 壁ドラッグ = null; // 壁の長さの数字をつかんで、壁を平行に動かしている間の状態(パソコン)
@@ -1821,6 +1832,7 @@ function 室名が避けるもの(room) {
     const 枠 = 設備の枠(room);
     if (枠) 設備.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ix, iy]) => 枠.点(ix * 枠.hw, iy * 枠.hd)));
   }
+  置き場の種類.forEach((t) => { const q = 置き場の四角(room, t.key); if (q) 設備.push(q.点); });   // 洗・冷の印
   (room.doors || []).forEach((d) => {
     if (!isSwingDoor(d) || d.swingOut) return;
     const g = doorSegment(room, d);
@@ -1949,7 +1961,7 @@ const 室名の位置の控え = new WeakMap();
 function 室名の自動の位置(room) {
   if (room.typeKey === "kaidan") return 階段の室名の位置(room);
   const 倍率の段 = Math.round(Math.log(view.scale) / Math.log(1.05));
-  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText,
+  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge,
     room.fixturePos, room.fixtureSize, room.fixtureRotation, roomHasFixture(room), 倍率の段, isExportRender]);
   let 控え = 室名の位置の控え.get(room);
   if (!控え || 控え.key !== key) {
@@ -2030,6 +2042,92 @@ function 室名の枠の中か(room, sx, sy) {
   const f = 室名の描いた枠.get(room);
   return !!f && Math.abs(sx - f.x) <= f.w / 2 + 5 && Math.abs(sy - f.y) <= f.h / 2 + 3;
 }
+// ---- 洗濯機・冷蔵庫の置き場の印 ------------------------------------------------
+// ★2026-09-28 レインズの図面では、点線の四角に「洗」「冷」(#0・#3・#79・#81・#101)。
+//   room.washer / room.fridge に四角の真ん中(図面の座標)を持つ。無ければ印なし。
+//   部屋を選ぶとドラッグで動かせる(タップだけなら、室名と同じく編集メニュー)。
+const 置き場の種類 = [
+  { key: "washer", 字: "洗", 名: "洗濯機" },
+  { key: "fridge", 字: "冷", 名: "冷蔵庫" },
+];
+const 置き場の半分_マス = 0.35;   // 700mm 角ほど(洗濯機の防水パン 640〜800mm・冷蔵庫 600〜700mm)
+function 置き場の位置(room, key) {
+  const g = room[key];
+  return g && Number.isFinite(g.gx) && Number.isFinite(g.gy) ? g : null;
+}
+// 画面の四角 { x, y, h(半分の長さ), L, T, R, B, 点(4隅) }
+function 置き場の四角(room, key) {
+  const g = 置き場の位置(room, key);
+  if (!g) return null;
+  const c = gridToScreen(g.gx, g.gy), h = 置き場の半分_マス * BASE_CELL * view.scale;
+  return {
+    x: c.x, y: c.y, h, L: c.x - h, T: c.y - h, R: c.x + h, B: c.y + h,
+    点: [{ x: c.x - h, y: c.y - h }, { x: c.x + h, y: c.y - h }, { x: c.x + h, y: c.y + h }, { x: c.x - h, y: c.y + h }],
+  };
+}
+function 置き場を描く(room) {
+  置き場の種類.forEach((t) => {
+    const q = 置き場の四角(room, t.key);
+    if (!q) return;
+    dctx.save();
+    dctx.setLineDash([4, 3]);
+    dctx.lineWidth = 1.3;
+    dctx.strokeStyle = "#5c6b78";
+    dctx.strokeRect(q.L, q.T, q.h * 2, q.h * 2);
+    dctx.setLineDash([]);
+    dctx.fillStyle = "#5c6b78";
+    dctx.font = `bold ${Math.max(9, Math.min(22, Math.round(q.h * 1.05)))}px -apple-system, sans-serif`;
+    dctx.textAlign = "center"; dctx.textBaseline = "middle";
+    dctx.fillText(t.字, q.x, q.y + 0.5);
+    // 選んでいる部屋では、つかめると分かるように紫で囲む(書き出しでは描かない)
+    if (!isExportRender && editingRoom === room) {
+      dctx.strokeStyle = "#6f4fed"; dctx.lineWidth = 1.6;
+      dctx.strokeRect(q.L - 3, q.T - 3, q.h * 2 + 6, q.h * 2 + 6);
+    }
+    dctx.restore();
+  });
+}
+// 押した所にある置き場の印(選んだ部屋の)。"washer" | "fridge" | null
+function 置き場に当たるか(room, sx, sy) {
+  if (!room) return null;
+  for (const t of 置き場の種類) {
+    const q = 置き場の四角(room, t.key);
+    const r = q && Math.max(q.h, 14) + 3;   // 小さく表示していても指でつかめるよう、最低 34px 角
+    if (q && Math.abs(sx - q.x) <= r && Math.abs(sy - q.y) <= r) return t.key;
+  }
+  return null;
+}
+// 印を初めて置く所：部屋の角のうち、四角が部屋に収まり、戸・戸の弧・設備・ほかの印からいちばん離れた所
+function 置き場の初めの位置(room) {
+  const pts = room.points, n = pts.length;
+  const h = 置き場の半分_マス + 0.05;   // 壁から少し離す
+  const cell = BASE_CELL * view.scale;
+  const { 設備, 弧 } = 室名が避けるもの(room);   // ほかの印も「設備」に入っている
+  const 戸の真ん中 = (room.doors || []).map((d) => doorSegment(room, d)).filter(Boolean).map((g) => g.center);
+  let best = null;
+  for (let i = 0; i < n; i++) {
+    const cur = pts[i], prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
+    const l1 = Math.hypot(prev.gx - cur.gx, prev.gy - cur.gy), l2 = Math.hypot(next.gx - cur.gx, next.gy - cur.gy);
+    if (!(l1 > 0 && l2 > 0)) continue;
+    const d1 = { x: (prev.gx - cur.gx) / l1, y: (prev.gy - cur.gy) / l1 }, d2 = { x: (next.gx - cur.gx) / l2, y: (next.gy - cur.gy) / l2 };
+    if (Math.abs(d1.x * d2.y - d1.y * d2.x) < 0.5) continue;   // 角ではない
+    const g = { gx: cur.gx + (d1.x + d2.x) * h, gy: cur.gy + (d1.y + d2.y) * h };
+    const 隅 = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => ({ gx: g.gx + a * 置き場の半分_マス, gy: g.gy + b * 置き場の半分_マス }));
+    if (!isPointInPolygonGrid(g.gx, g.gy, pts) || !隅.every((q) => isPointInPolygonGrid(q.gx, q.gy, pts))) continue;
+    const c = gridToScreen(g.gx, g.gy), hs = 置き場の半分_マス * cell;
+    const L = c.x - hs, T = c.y - hs, R = c.x + hs, B = c.y + hs;
+    let 間 = Infinity;
+    [...設備, ...弧].forEach((poly) => {
+      for (let k = 0; k < poly.length; k++) 間 = Math.min(間, 線分と箱の距離(poly[k], poly[(k + 1) % poly.length], L, T, R, B));
+      if (点が多角形の中か(poly, c.x, c.y)) 間 = 0;
+    });
+    戸の真ん中.forEach((q) => { 間 = Math.min(間, Math.hypot(Math.max(L - q.x, 0, q.x - R), Math.max(T - q.y, 0, q.y - B))); });
+    if (!best || 間 > best.間) best = { g, 間 };
+  }
+  if (best) return { gx: best.g.gx, gy: best.g.gy };
+  return polygonCentroidGrid(pts);
+}
+
 // 選んだ部屋の室名を点線で囲む(つかんで動かせると分かるように)。設備のつまみと同じ紫
 function 室名の枠を描く(room) {
   if (!room || !室名を出すか(room)) return;
@@ -2116,6 +2214,7 @@ function drawRoomDecor(room) {
     dctx.restore();
   }
   dctx.restore();
+  置き場を描く(room);   // 洗濯機・冷蔵庫の置き場(室名より先に描く = 室名が上)
 
   // 廊下など、室名も広さも表示する意味がない部屋種別はラベル描画自体を省略する
   if (!室名を出すか(room)) return;
@@ -3670,6 +3769,7 @@ function startPinch() {
   isPointerDrawing = false;
   // 室名をつかんだだけで2本目の指が来たら、つかんだのは無しにする(離したときに「タップ」と見て編集メニューが開くため)
   if (室名ドラッグ && !室名ドラッグ.動き出した) 室名ドラッグ = null;
+  if (置き場ドラッグ && !置き場ドラッグ.動き出した) 置き場ドラッグ = null;
   const pts = [...pointers.values()];
   const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
@@ -3748,6 +3848,15 @@ function tryRoomSelectionTap(sx, sy) {
       // 履歴は実際に大きさが変わったときだけ積む(つまみに触っただけで「戻す」が1つ増えないように)
       設備の大きさドラッグ = 設備の大きさを変える準備(editingRoom, 設備.ix, 設備.iy, sx, sy);
       render();
+      return true;
+    }
+    // 洗・冷の印(室名より先。小さいので、押した所がはっきりしている)
+    const 印 = 置き場に当たるか(editingRoom, sx, sy);
+    if (印) {
+      置き場ドラッグ = {
+        room: editingRoom, key: 印, 始めのJSON: JSON.stringify(state.rooms), 積んだ: false,
+        始めの画面: { x: sx, y: sy }, 始めの位置: { ...editingRoom[印] }, 動き出した: false,
+      };
       return true;
     }
     // 室名の文字。★室名は部屋の真ん中にあるので、「もう一度タップして編集メニュー」もここに当たる。
@@ -3835,7 +3944,7 @@ function handleSingleTouchStart(sx, sy) {
     // ★選んだ部屋の室名(点線の枠の中)は、建具より先に掴む。狭いトイレ・洗面所では室名が戸の弧の
     //   上にあり(開き戸の当たりは弧の向きへ戸の幅だけ伸びる)、室名をつかもうとすると建具の画面が開いていた。
     //   枠の外なら建具はこれまでどおり。角・設備のつまみは室名より先(tryRoomSelectionTap の順)
-    if (existingDoor && !(editingRoom && 室名の枠の中か(editingRoom, sx, sy))) {
+    if (existingDoor && !(editingRoom && (室名の枠の中か(editingRoom, sx, sy) || 置き場に当たるか(editingRoom, sx, sy)))) {
       openDoorEditModal(existingDoor.room, existingDoor.index);
       return;
     }
@@ -3918,6 +4027,28 @@ drawCanvas.addEventListener("pointermove", (e) => {
       room.fixturePos = candidate;
       render();
     }
+    return;
+  }
+
+  if (置き場ドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 置き場ドラッグ;
+    if (!d.動き出した) {
+      if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 6) return;
+      d.動き出した = true;
+    }
+    const 今 = screenToGridRaw(sx, sy), 始め = screenToGridRaw(d.始めの画面.x, d.始めの画面.y);
+    const 行き先 = { gx: d.始めの位置.gx + 今.gx - 始め.gx, gy: d.始めの位置.gy + 今.gy - 始め.gy };
+    // 四角ごと部屋の中に収まる所だけ(真ん中だけ見ると、四角が壁の外へはみ出した)。
+    // 斜めに壁へ当たったら、壁に沿って滑るよう縦・横を別々に試す
+    const 半 = 置き場の半分_マス, 元 = d.room[d.key];
+    const 収まる = (g) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].every(([a, b]) => isPointInPolygonGrid(g.gx + a * 半, g.gy + b * 半, d.room.points));
+    const g = [行き先, { gx: 行き先.gx, gy: 元.gy }, { gx: 元.gx, gy: 行き先.gy }].find(収まる);
+    if (!g || (g.gx === 元.gx && g.gy === 元.gy)) return;
+    if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+    d.room[d.key] = g;
+    render();
     return;
   }
 
@@ -4146,6 +4277,14 @@ function finalizeActiveDrags() {
   if (fixtureDrag) {
     fixtureDrag = null;
     render(); autoSave();
+    return true;
+  }
+  if (置き場ドラッグ) {
+    const d = 置き場ドラッグ;
+    置き場ドラッグ = null;
+    if (!d.動き出した) { openRoomEditor(d.room); return true; }
+    render();
+    if (d.積んだ) autoSave();
     return true;
   }
   if (室名ドラッグ) {
@@ -4707,11 +4846,11 @@ drawCanvas.addEventListener("pointermove", (e) => {
   if (!壁ドラッグ && currentTool === "wall" && drawingPoints.length === 0) {
     const d = 設備の大きさドラッグ;
     if (d) 形 = 設備の大きさのカーソル(d.room, d.ix, d.iy);
-    else if (室名ドラッグ && 室名ドラッグ.動き出した) 形 = "move";
+    else if ((室名ドラッグ && 室名ドラッグ.動き出した) || (置き場ドラッグ && 置き場ドラッグ.動き出した)) 形 = "move";
     else if (editingRoom && pointers.size === 0) {
       const { 角, 設備 } = 選んだ部屋のつまみ(editingRoom, sx, sy);   // 押したときと同じ決め方
       if (設備) 形 = 設備.種類 === "大きさ" ? 設備の大きさのカーソル(editingRoom, 設備.ix, 設備.iy) : (設備.種類 === "動かす" ? "move" : "grab");
-      else if (角 === null && 室名に当たるか(editingRoom, sx, sy)) 形 = "move";
+      else if (角 === null && (置き場に当たるか(editingRoom, sx, sy) || 室名に当たるか(editingRoom, sx, sy))) 形 = "move";
     }
   }
   if (drawCanvas.style.cursor !== 形) drawCanvas.style.cursor = 形;
@@ -4789,6 +4928,11 @@ function 選んだ部屋を動かす(dx, dy, 大きく) {
   if (room.fixturePos) {
     room.fixturePos = { gx: 刻みに戻す(room.fixturePos.gx + dx * 歩幅), gy: 刻みに戻す(room.fixturePos.gy + dy * 歩幅) };
   }
+  // 洗・冷の印も図面上の座標
+  置き場の種類.forEach((t) => {
+    const g = 置き場の位置(room, t.key);
+    if (g) room[t.key] = { gx: 刻みに戻す(g.gx + dx * 歩幅), gy: 刻みに戻す(g.gy + dy * 歩幅) };
+  });
   // 手で動かした室名も同じく図面上の座標
   if (room.labelPos) {
     room.labelPos = { gx: 刻みに戻す(room.labelPos.gx + dx * 歩幅), gy: 刻みに戻す(room.labelPos.gy + dy * 歩幅) };
@@ -5033,6 +5177,11 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   $("kitchenRow").style.display = LDKの部屋 ? "flex" : "none";
   キッチンのボタンで積んだ = false;
   if (LDKの部屋) $("btnKitchenOn").textContent = editingRoom.kitchenOn ? "あり" : "なし";
+  // 洗・冷の印。水まわりの設備の部屋・収納・階段・玄関・バルコニーには出さない
+  const 印の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && 印を置ける部屋か(editingRoom);
+  $("okibaRow").style.display = 印の部屋 ? "flex" : "none";
+  置き場のボタンで積んだ = false;
+  if (印の部屋) 置き場のボタンを更新();
   // 室名の位置。新しく描いた部屋(まだ図面に無い)・室名を出さない種類(廊下など)では出さない
   const 室名の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && 室名を出すか(editingRoom);
   $("labelPosRow").style.display = 室名の部屋 ? "flex" : "none";
@@ -5072,6 +5221,30 @@ $("btnLabelPosReset").addEventListener("click", () => {
   render(); autoSave();
   室名の位置の表示を更新();
 });
+function 印を置ける部屋か(room) {
+  return !["kaidan", "veranda", "deadspace", "oshiire", "shuno", "wic", "genkan", "wc", "yokushitsu"].includes(room.typeKey);
+}
+let 置き場のボタンで積んだ = false;
+function 置き場のボタンを更新() {
+  const room = editingRoom;
+  [["washer", "btnWasher"], ["fridge", "btnFridge"]].forEach(([key, id]) => {
+    const t = 置き場の種類.find((x) => x.key === key), あり = !!(room && 置き場の位置(room, key));
+    $(id).textContent = `${t.字} ${あり ? "あり" : "なし"}`;
+    $(id).classList.toggle("on", あり);
+    $(id).title = `${t.名}の置き場の印`;
+  });
+}
+function 置き場を切り替える(key) {
+  const room = editingRoom;
+  if (!room) return;
+  if (!置き場のボタンで積んだ) { snapshot(); 置き場のボタンで積んだ = true; }
+  if (置き場の位置(room, key)) delete room[key];
+  else room[key] = 置き場の初めの位置(room);
+  置き場のボタンを更新();
+  render(); autoSave();
+}
+$("btnWasher").addEventListener("click", () => 置き場を切り替える("washer"));
+$("btnFridge").addEventListener("click", () => 置き場を切り替える("fridge"));
 let キッチンのボタンで積んだ = false;
 $("btnKitchenOn").addEventListener("click", () => {
   const room = editingRoom;
@@ -5636,7 +5809,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
