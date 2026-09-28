@@ -2394,6 +2394,30 @@ function 置き場の初めの位置(room) {
   const cell = BASE_CELL * view.scale;
   const { 設備, 弧 } = 室名が避けるもの(room);   // ほかの印も「設備」に入っている
   const 戸の真ん中 = (room.doors || []).map((d) => doorSegment(room, d)).filter(Boolean).map((g) => g.center);
+  // ★隣の部屋の戸で、この部屋に面するもの・この部屋の側へ振れる外開きの戸も避ける。
+  //   自分の戸だけを見ていたら、トイレの外開きの戸が LDK へ振れる所に「冷」を置いた(2026-09-28 試し版で見つけた)
+  state.rooms.forEach((r) => {
+    if (r === room) return;
+    (r.doors || []).forEach((d) => {
+      const g = doorSegment(r, d);
+      if (!g) return;
+      const 向こう = { x: g.center.x - g.nx * 6, y: g.center.y - g.ny * 6 };   // その部屋の外側 = この部屋か
+      if (!pointInRoomScreen(room, 向こう.x, 向こう.y)) return;
+      戸の真ん中.push(g.center);
+      if (!(isSwingDoor(d) && d.swingOut)) return;
+      const 扇 = (中心, ux, uy, rr) => {   // 外開きなので、振れる向きは -n(この部屋の側)
+        const 点 = [中心];
+        for (let k = 0; k <= 6; k++) {
+          const t = (k / 6) * (Math.PI / 2);
+          点.push({ x: 中心.x + (ux * Math.cos(t) - g.nx * Math.sin(t)) * rr, y: 中心.y + (uy * Math.cos(t) - g.ny * Math.sin(t)) * rr });
+        }
+        return 点;
+      };
+      if (d.type === "hinge_double") { 弧.push(扇(g.a, g.ux, g.uy, g.doorWidth / 2)); 弧.push(扇(g.b, -g.ux, -g.uy, g.doorWidth / 2)); }
+      else if (!d.flip) 弧.push(扇(g.a, g.ux, g.uy, g.doorWidth));
+      else 弧.push(扇(g.b, -g.ux, -g.uy, g.doorWidth));
+    });
+  });
   let best = null;
   for (let i = 0; i < n; i++) {
     const cur = pts[i], prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
