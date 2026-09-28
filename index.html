@@ -1056,6 +1056,30 @@ const SIMPLE_STROKE = "#3a3a3a";
 // 「色分けされた面」に見えてしまい、どこが壁なのか読み取りにくかった。
 // 外周の太線(drawBuildingOutline)と同じ色にして、内と外で線がつながって見えるようにする。
 const WALL_COLOR = "#1c2733";
+// ★2026-09-28 配色「マイソク風」を足した。レインズの図面(プロの図面)に近い濃い色で塗り分け、
+//   壁を厚みのある帯で、洋室・LDKには床の木目を描く。カラー・シンプルの配色は今までどおり。
+//   古い版はこの配色を知らないので、カラーとして描く(壊れはしない)。
+const マイソク風の色 = {
+  youshitsu: "#f8dbe4", ldk: "#fcd9aa", kitchen: "#fde2b6", washitsu: "#cfe6b0", genkan: "#dedede",
+  rouka: "#f4eed6", wc: "#cfe8f6", yokushitsu: "#cfe8f6", senmen: "#cfe8f6", ut: "#cfe8f6",
+  oshiire: "#d8c893", shuno: "#d8c893", wic: "#dccd9c", kaidan: "#dcecc8", veranda: "#ffffff",
+  deadspace: "#cfcfcf", sonota: "#eeeeee",
+};
+// 壁の太さ(画面のpx)と色。★マイソク風は、外壁も間仕切りも厚み 0.13マス(約120mm)の灰色の帯で描く。
+//   レインズの図面は壁を同じ厚みの帯で描き(#0・#1・#79)、窓は帯の中の細い二重線。
+//   カラー・シンプルは今までどおり 3px の線(外壁は書き出しのときだけ外側に太い輪)。
+const マイソク風の壁の色 = "#4d5358";
+function 壁の太さ() { return colorScheme === "maisoku" ? Math.max(3, BASE_CELL * view.scale * 0.13) : 3; }
+function 壁の色() { return colorScheme === "simple" ? SIMPLE_STROKE : colorScheme === "maisoku" ? マイソク風の壁の色 : WALL_COLOR; }
+// 部屋の塗りの色(配色ごと)
+function 部屋の塗り(room) {
+  if (colorScheme === "simple") return SIMPLE_FILL;
+  const type = roomType(room);
+  if (colorScheme === "maisoku") return マイソク風の色[type.key] || type.color;
+  return type.color;
+}
+const 配色の順 = ["color", "maisoku", "simple"];
+const 配色の名前 = { color: "カラー", maisoku: "マイソク風", simple: "シンプル" };
 function setColorScheme(mode) {
   colorScheme = mode;
   localStorage.setItem("madori_color_scheme_v1", mode);
@@ -2293,7 +2317,7 @@ function drawRoomFill(room) {
   // バルコニーは塗らない(紙の白のまま)。★塗ると、保存画像で建物の外壁の輪(バルコニー側へ出る太線)を隠す
   if (!外の部屋か(room)) {
     roomPath(room);
-    dctx.fillStyle = colorScheme === "simple" ? SIMPLE_FILL : type.color;
+    dctx.fillStyle = 部屋の塗り(room);
     dctx.fill();
   }
   if (colorScheme === "simple") {
@@ -2310,8 +2334,8 @@ function drawRoomWalls(room, openings) {
   const isEditing = !isExportRender && editingRoom === room;
   const 外 = 外の部屋か(room);
   dctx.save();
-  dctx.lineWidth = 外 ? (isEditing ? 3 : 1.2) : (isEditing ? 5 : 3);   // バルコニーは壁ではなく細い線
-  dctx.strokeStyle = colorScheme === "simple" ? SIMPLE_STROKE : WALL_COLOR;
+  dctx.lineWidth = 外 ? (isEditing ? 3 : 1.2) : (壁の太さ() + (isEditing ? 2 : 0));   // バルコニーは壁ではなく細い線
+  dctx.strokeStyle = 外 ? (colorScheme === "simple" ? SIMPLE_STROKE : WALL_COLOR) : 壁の色();
   dctx.lineCap = "butt";     // 丸めると開口の中まで線が伸びて、せっかくの切れ目が埋まる
   dctx.lineJoin = "miter";
   strokeOutlineWithOpenings(room, openings);
@@ -3657,12 +3681,14 @@ function drawDoorMark(room, door) {
     //   試作4案(今/水色/壁の厚みに水色/製図＋水色)を実データで並べ、白井さんが「壁の厚みに水色」を選んだ。
     //   製図の障子の線は、小さい画像では壁の面の線に埋もれて読めなかった。
     //   (以前、壁を切る前は窓だけ青い線にしていた。今回は線ではなく面で色を付ける)
-    let 内 = 3.6 * zs, 外 = -3.6 * zs;   // nx,ny は室内向き。内=室内側の面、外=室外側の面
+    // マイソク風は壁の帯と同じ厚み(帯が 3.6 より厚い)
+    const 帯の半分 = Math.max(3.6 * zs, 壁の太さ() / 2);
+    let 内 = 帯の半分, 外 = -帯の半分;   // nx,ny は室内向き。内=室内側の面、外=室外側の面
     if (isExportRender && isOnBuildingEdge(g)) {
-      // 保存画像の外壁：部屋の壁線(太さ3)の室内側の面から、外周の輪の外側の面まで。
+      // 保存画像の外壁：部屋の壁線(太さ3。マイソク風は帯)の室内側の面から、外周の輪の外側の面まで。
       // 面の線(太さ1.2)の半分だけ内へ寄せる。線の中心を面に置くと、その半分が外壁より外へはみ出す(試験で実測1)
       const 線の半分 = 0.6 * zs;
-      内 = 1.5 - 線の半分;
+      内 = 壁の太さ() / 2 - 線の半分;
       外 = -外壁の輪の厚み(書き出しの倍率) / 書き出しの倍率 + 線の半分;
     }
     const P = (p, o) => ({ x: p.x + nx * o, y: p.y + ny * o });
@@ -3671,7 +3697,7 @@ function drawDoorMark(room, door) {
     dctx.beginPath();
     [P(a, 内), P(b, 内), P(b, 外), P(a, 外)].forEach((q, i) => (i ? dctx.lineTo(q.x, q.y) : dctx.moveTo(q.x, q.y)));
     dctx.closePath();
-    dctx.fillStyle = 窓の水色;
+    dctx.fillStyle = colorScheme === "maisoku" ? "#ffffff" : 窓の水色;   // マイソク風の窓は白地に細い線(プロの図面の描き方)
     dctx.fill();
     dctx.lineWidth = 1.2 * zs;                       // 壁の面の線(腰壁)は細く
     線(P(a, 内), P(b, 内)); 線(P(a, 外), P(b, 外));
@@ -5668,11 +5694,14 @@ btnSnapMode.addEventListener("click", () => { renderSnapModeGrid(); showModal("s
 
 /* ---------------- 配色モード(カラー/シンプル)の切替 ---------------- */
 function updateColorSchemeButton() {
-  $("colorSchemeLabel").textContent = colorScheme === "simple" ? "配色:シンプル" : "配色:カラー";
-  $("colorSchemeLabelShort").textContent = colorScheme === "simple" ? "シンプル" : "カラー";   // 狭い画面用
+  const 名前 = 配色の名前[colorScheme] || "カラー";
+  $("colorSchemeLabel").textContent = `配色:${名前}`;
+  $("colorSchemeLabelShort").textContent = 名前 === "マイソク風" ? "マイソク" : 名前;   // 狭い画面用
 }
 $("btnColorScheme").addEventListener("click", () => {
-  setColorScheme(colorScheme === "simple" ? "color" : "simple");
+  // カラー → マイソク風 → シンプル → カラー
+  const i = 配色の順.indexOf(colorScheme);
+  setColorScheme(配色の順[(i + 1) % 配色の順.length]);
   updateColorSchemeButton();
   render();
 });
@@ -6082,7 +6111,7 @@ function drawBuildingOutline(octx, w, h, scale, pad) {
   const off = document.createElement("canvas");
   off.width = w + pad * 2; off.height = h + pad * 2;
   const offCtx = off.getContext("2d");
-  offCtx.fillStyle = "#1c2733";
+  offCtx.fillStyle = colorScheme === "maisoku" ? マイソク風の壁の色 : "#1c2733";   // 輪は壁と同じ色
   state.rooms.forEach((room) => {
     if (外の部屋か(room)) return;   // バルコニーは建物の外(輪で囲まない)
     offCtx.beginPath();
