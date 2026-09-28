@@ -1063,7 +1063,7 @@ const マイソク風の色 = {
   youshitsu: "#f8dbe4", ldk: "#fcd9aa", kitchen: "#fde2b6", washitsu: "#cfe6b0", genkan: "#dedede",
   rouka: "#f4eed6", wc: "#cfe8f6", yokushitsu: "#cfe8f6", senmen: "#cfe8f6", ut: "#cfe8f6",
   oshiire: "#d8c893", shuno: "#d8c893", wic: "#dccd9c", kaidan: "#dcecc8", veranda: "#ffffff",
-  deadspace: "#cfcfcf", sonota: "#eeeeee",
+  deadspace: "#cfcfcf", fukinuke: "#ffffff", sonota: "#eeeeee",
 };
 // 壁の太さ(画面のpx)と色。★マイソク風は、外壁も間仕切りも厚み 0.13マス(約120mm)の灰色の帯で描く。
 //   レインズの図面は壁を同じ厚みの帯で描き(#0・#1・#79)、窓は帯の中の細い二重線。
@@ -1114,6 +1114,10 @@ const ROOM_TYPES = [
   //   建物の外にある場所として描く(外の部屋か)。塗らない・細い線・手すりの二重線・外壁の輪から外す。
   { key: "veranda", label: "バルコニー", em: "🌤️", color: "#ffffff", stroke: "#9fb3c2", excludeFromTotal: true, hideTatami: true },
   { key: "deadspace", label: "デッドスペース", em: "⬛", color: "#dcdee1", stroke: "#7a828a", excludeFromTotal: true, noLabel: true },
+  // ★2026-09-28 吹抜(×印・床面積に数えない)。レインズの図面 #101。★データは「デッドスペース ＋ fukinuke」で持つ。
+  //   古い版は吹抜を知らないので、デッドスペースとして描く(合計に数えない所は同じ)。新しい種類の名前で持つと、
+  //   古い版は「その他」にして合計の畳数に足してしまう。★その他(最後の要素)は知らない種類の受け皿なので最後のまま。
+  { key: "fukinuke", label: "吹抜", em: "✖️", color: "#ffffff", stroke: "#9aa1ab", excludeFromTotal: true, hideTatami: true },
   { key: "sonota", label: "その他", em: "▫️", color: "#f0f0f0", stroke: "#b0b0b0" },
 ];
 // 建具種別: 絵文字ではなく建築製図に準じた線記号(円弧・平行線)で描画する。
@@ -1672,7 +1676,27 @@ function 設備の寸法の文字(マス) { return Math.round(マス * 910).toLo
 //   その部屋の壁だけ切っても、隣の部屋の線が残って開口にならない。
 
 function roomType(room) {
+  if (room.typeKey === "deadspace" && room.fukinuke) return 吹抜の種類;   // 吹抜はデッドスペースとして持っている
   return ROOM_TYPES.find((t) => t.key === room.typeKey) || ROOM_TYPES[ROOM_TYPES.length - 1];
+}
+const 吹抜の種類 = ROOM_TYPES.find((t) => t.key === "fukinuke");
+function 吹抜か(room) { return room.typeKey === "deadspace" && !!room.fukinuke; }
+// 吹抜の×印(外接する四角の対角線を、部屋の形で切り抜く)
+function drawFukinukeX(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  dctx.strokeStyle = colorScheme === "simple" ? "rgba(60,60,60,0.6)" : "rgba(70,80,90,0.6)";
+  dctx.lineWidth = 1;
+  dctx.setLineDash([6, 4]);
+  dctx.beginPath();
+  dctx.moveTo(minX, minY); dctx.lineTo(maxX, maxY);
+  dctx.moveTo(maxX, minY); dctx.lineTo(minX, maxY);
+  dctx.stroke();
+  dctx.restore();
 }
 
 // 部屋の多角形をパスにする(塗り・クリップで使い回す)
@@ -2354,10 +2378,12 @@ function drawRoomFill(room) {
     dctx.fillStyle = 部屋の塗り(room);
     dctx.fill();
   }
-  if (colorScheme === "simple") {
-    if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
-  } else if (room.typeKey === "genkan") drawTileFill(room);
-  else if (カラーでも斜線.includes(room.typeKey)) drawHatchFill(room);
+  const 種類 = roomType(room).key;   // 吹抜は「デッドスペース」で持っているので typeKey ではなくこちらで見る
+  if (種類 === "fukinuke") drawFukinukeX(room);
+  else if (colorScheme === "simple") {
+    if (HATCH_ROOM_KEYS.includes(種類)) drawHatchFill(room);
+  } else if (種類 === "genkan") drawTileFill(room);
+  else if (カラーでも斜線.includes(種類)) drawHatchFill(room);
   if (room.typeKey === "washitsu") drawTatamiLines(room);   // 和室の畳の線(どちらの配色でも)
   if (colorScheme === "maisoku" && 床の木目の部屋.includes(room.typeKey)) drawFlooring(room);
 }
@@ -2367,7 +2393,7 @@ function drawRoomWalls(room, openings) {
   // 選択中の部屋は枠を太くして強調する。これも「触るための印」なので書き出しでは外す
   // (ハンドルだけ消しても、この太枠が残って1部屋だけ黒縁になる。実際に画像で確認した)。
   const isEditing = !isExportRender && editingRoom === room;
-  const 外 = 外の部屋か(room);
+  const 外 = 外の部屋か(room) || 吹抜か(room);   // バルコニーと吹抜は壁ではなく細い線
   dctx.save();
   dctx.lineWidth = 外 ? (isEditing ? 3 : 1.2) : (壁の太さ() + (isEditing ? 2 : 0));   // バルコニーは壁ではなく細い線
   dctx.strokeStyle = 外 ? (colorScheme === "simple" ? SIMPLE_STROKE : WALL_COLOR) : 壁の色();
@@ -2375,7 +2401,7 @@ function drawRoomWalls(room, openings) {
   dctx.lineJoin = "miter";
   strokeOutlineWithOpenings(room, openings);
   dctx.restore();
-  if (外) 手すりを描く(room);
+  if (外の部屋か(room)) 手すりを描く(room);
 }
 
 // (3) 建具の記号
@@ -5441,7 +5467,7 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   }
   $("stairCornerRow").style.display = isStair && $("tatamiModal").dataset.stairBent === "1" ? "flex" : "none";
   // 設備の大きさ(図面の枠で変える)。いまの寸法と「自動に戻す」。種類を変えている途中(新しい種類)では出さない
-  const 設備の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && roomHasFixture(editingRoom);
+  const 設備の部屋 = isEdit && editingRoom && roomType(editingRoom).key === type.key && roomHasFixture(editingRoom);
   $("tatamiModal").dataset.fixtureReset = "0";
   $("fixtureSizeRow").style.display = 設備の部屋 ? "flex" : "none";
   if (設備の部屋) {
@@ -5464,12 +5490,12 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   // 建物の外の文字(図面にある部屋を開いたときだけ)
   $("notesRow").style.display = isEdit && editingRoom ? "flex" : "none";
   // 洗・冷の印。水まわりの設備の部屋・収納・階段・玄関・バルコニーには出さない
-  const 印の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && 印を置ける部屋か(editingRoom);
+  const 印の部屋 = isEdit && editingRoom && roomType(editingRoom).key === type.key && 印を置ける部屋か(editingRoom);
   $("okibaRow").style.display = 印の部屋 ? "flex" : "none";
   置き場のボタンで積んだ = false;
   if (印の部屋) 置き場のボタンを更新();
   // 室名の位置。新しく描いた部屋(まだ図面に無い)・室名を出さない種類(廊下など)では出さない
-  const 室名の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && 室名を出すか(editingRoom);
+  const 室名の部屋 = isEdit && editingRoom && roomType(editingRoom).key === type.key && 室名を出すか(editingRoom);
   $("labelPosRow").style.display = 室名の部屋 ? "flex" : "none";
   室名のボタンで積んだ = false;
   if (室名の部屋) 室名の位置の表示を更新();
@@ -5671,6 +5697,7 @@ function confirmTatami() {
   } else {
     snapshot();
     const room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
+    if (pendingRoom.fukinuke) room.fukinuke = true;
     if (v !== masuToTatami(polygonAreaMasu(pendingRoom.points))) room.tatamiManual = true;
     if (isStair) { room.stepCount = stepCount; room.stairRotation = stairRotation; }
     階段の文字を合わせる(room);
@@ -5702,7 +5729,7 @@ function openRoomEditor(room) {
   editingRoom = room;
   pendingRoom = { points: room.points, masu: polygonAreaMasu(room.points), typeKey: room.typeKey, tatami: room.tatami };
   render();
-  const type = ROOM_TYPES.find((t) => t.key === room.typeKey) || ROOM_TYPES[ROOM_TYPES.length - 1];
+  const type = roomType(room);
   openTatamiModal(type, room.tatami, "マス目から自動計算", true);
 }
 
@@ -5712,9 +5739,15 @@ function selectRoomType(type) {
   const tatami = masuToTatami(masu);
   const source = "マス目から自動計算";
   // 手で決めた設備の大きさは、その種類の設備のもの(キッチンの 2550mm を便器に当てない)
-  if (editingRoom && editingRoom.typeKey !== type.key) delete editingRoom.fixtureSize;
-  if (editingRoom) editingRoom.typeKey = type.key;
-  pendingRoom.typeKey = type.key;
+  if (editingRoom && roomType(editingRoom).key !== type.key) delete editingRoom.fixtureSize;
+  // 吹抜は「デッドスペース ＋ fukinuke」で持つ(古い版で開いたときのため。吹抜の種類の説明を参照)
+  const 持つ種類 = type.key === "fukinuke" ? "deadspace" : type.key;
+  if (editingRoom) {
+    editingRoom.typeKey = 持つ種類;
+    if (type.key === "fukinuke") editingRoom.fukinuke = true; else delete editingRoom.fukinuke;
+  }
+  pendingRoom.typeKey = 持つ種類;
+  pendingRoom.fukinuke = type.key === "fukinuke";
   pendingRoom.tatami = tatami;
   openTatamiModal(type, tatami, source, !!editingRoom);
 }
