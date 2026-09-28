@@ -1511,6 +1511,38 @@ function render() {
 //   デッドスペースは「部屋ではない」印なので、カラーでも斜線のまま。
 const HATCH_ROOM_KEYS = ["genkan", "oshiire", "shuno", "wic", "ut", "veranda", "deadspace"];
 const カラーでも斜線 = ["deadspace"];
+// 和室の畳の線。★2026-09-28 レインズの図面では、和室に畳の割り付けの線を描くことが多い(#36・#81・#99・#101)。
+//   畳1枚 = 1×2マス(江戸間 880×1760mm ≒ 0.97×1.93マス)。部屋の壁から敷き始め、長い辺の向きに畳を並べ、
+//   段ごとに1マスずらす(4枚の角が1点に集まらない敷き方に近い)。端は半畳になる。
+function drawTatamiLines(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const c = BASE_CELL * view.scale;
+  if (!(c >= 12)) return;   // 小さく表示しているときは描かない(線が詰まって読めない)
+  const 横長 = maxX - minX >= maxY - minY;
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  dctx.strokeStyle = colorScheme === "simple" ? "rgba(60,60,60,0.35)" : "rgba(80,120,50,0.45)";
+  dctx.lineWidth = 1;
+  dctx.beginPath();
+  if (横長) {
+    // 畳を横に寝かせる：段(高さ1マス)の境目の横線、段の中は2マスごとの縦線(段ごとに1マスずらす)
+    for (let k = 0, y = minY; y < maxY - 1; k++, y += c) {
+      if (k > 0) { dctx.moveTo(minX, y); dctx.lineTo(maxX, y); }
+      for (let x = minX + (k % 2 ? c : 2 * c); x < maxX - 1; x += 2 * c) { dctx.moveTo(x, y); dctx.lineTo(x, Math.min(y + c, maxY)); }
+    }
+  } else {
+    for (let k = 0, x = minX; x < maxX - 1; k++, x += c) {
+      if (k > 0) { dctx.moveTo(x, minY); dctx.lineTo(x, maxY); }
+      for (let y = minY + (k % 2 ? c : 2 * c); y < maxY - 1; y += 2 * c) { dctx.moveTo(x, y); dctx.lineTo(Math.min(x + c, maxX), y); }
+    }
+  }
+  dctx.stroke();
+  dctx.restore();
+}
+
 // 玄関の土間のタイル(300mm角 ≒ 1/3マス)。目地は図面の原点に揃える(隣の部屋とずれない)
 function drawTileFill(room) {
   const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
@@ -2268,6 +2300,7 @@ function drawRoomFill(room) {
     if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
   } else if (room.typeKey === "genkan") drawTileFill(room);
   else if (カラーでも斜線.includes(room.typeKey)) drawHatchFill(room);
+  if (room.typeKey === "washitsu") drawTatamiLines(room);   // 和室の畳の線(どちらの配色でも)
 }
 
 // (2) 壁。建具のあるところは描かない = そこが開口部になる
