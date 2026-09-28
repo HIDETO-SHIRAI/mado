@@ -1666,13 +1666,24 @@ function 畳の文字(room) {
 //   倍率1・書き出しの大きさ(19px)で一度だけ決めて使い回したら、1.6倍の画面では
 //   トイレの便器の左に文字が収まる余地があるのに、便器に重ねていた。
 //   書き出しは isExportRender の間に、書き出しの文字の大きさで決め直す。
+// 室名の文字の大きさ(描き始め。部屋に収まらなければ drawRoomDecor の fitLines が縮める)と書体。
+// ★2026-09-28 レインズの図面と比べて、太字にし、部屋の大きさに合わせて大きくした。
+//   見本(プロの図面)は LDK・和室の室名が 0.4〜0.5マスの高さの太字。今までは部屋によらず
+//   15px(書き出し19px)の細字で、LDKでは見本の3分の1ほどだった。
+//   トイレなどの小さい部屋はこれまでと同じ13px(書き出し17px)のまま。
+function 室名の文字の大きさ(areaPx) {
+  const 基本 = Math.max(13, Math.min(24, Math.round(Math.sqrt(areaPx) * 0.11)));
+  return 基本 + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+}
+function 室名の書体(size) { return `bold ${size}px -apple-system, sans-serif`; }
+
 function 室名の枠の大きさ(room) {
   const type = roomType(room);
   const 面積 = polygonScreenArea(room.points);
-  const size = (面積 < 2400 ? 13 : 15) + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+  const size = 室名の文字の大きさ(面積);
   const 行 = type.hideTatami ? [type.label] : (面積 < 1600 ? [畳の文字(room)] : [type.label, 畳の文字(room)]);
   dctx.save();
-  dctx.font = `${size}px -apple-system, sans-serif`;
+  dctx.font = 室名の書体(size);
   const w = Math.max(...行.map((l) => dctx.measureText(l).width)) + 4;   // 白い縁取りの分
   dctx.restore();
   return { w, h: 行.length * (size + 3) + 2 };
@@ -1996,7 +2007,7 @@ function drawRoomDecor(room) {
   function fitLines(text, startSize) {
     let size = startSize;
     const lns = text.split("\n");
-    dctx.font = `${size}px -apple-system, sans-serif`;
+    dctx.font = 室名の書体(size);
     let widest = Math.max(...lns.map((l) => dctx.measureText(l).width));
     let blockH = lns.length * (size + 3);
     // 保存画像で「部屋名・畳数の文字が小さくて読みづらい」との指摘を受け、
@@ -2006,14 +2017,14 @@ function drawRoomDecor(room) {
     const minSize = 10 + (isExportRender ? EXPORT_LABEL_BOOST : 0);
     while ((widest > maxAllowed || blockH > maxAllowedH) && size > minSize) {
       size -= 1;
-      dctx.font = `${size}px -apple-system, sans-serif`;
+      dctx.font = 室名の書体(size);
       widest = Math.max(...lns.map((l) => dctx.measureText(l).width));
       blockH = lns.length * (size + 3);
     }
     return { lines: lns, size, fits: widest <= maxAllowed && blockH <= maxAllowedH };
   }
 
-  const startSize = (areaPx < 2400 ? 13 : 15) + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+  const startSize = 室名の文字の大きさ(areaPx);
   let result;
   if (type.hideTatami) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
@@ -2025,7 +2036,7 @@ function drawRoomDecor(room) {
       result = fitLines(tatamiText, startSize);
     }
   }
-  dctx.font = `${result.size}px -apple-system, sans-serif`;
+  dctx.font = 室名の書体(result.size);
   dctx.textAlign = "center"; dctx.textBaseline = "middle";
   // 階段の矢印・踏み板や設備アイコンの線が文字と重なっても読めるよう、
   // 白い縁取り(halo)を先に描いてから本体の文字を重ねる。
