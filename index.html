@@ -244,6 +244,9 @@
   .btn.danger { background: #fdeceA; color: var(--danger); }
 
   /* 部屋の画面の「図面に書く名前」。行の右側に収まる幅(iOS がズームしないよう文字は16px) */
+  /* 部屋の画面は行が増えた(名前・キッチン・寸法線・外の文字・置き場・室名の位置)。行の所だけ縦にスクロールし、
+     見出しと「これで確定」はいつも見えるようにする。★スマホ(高さ667px)で、下の行と「これで確定」が画面の外に切れて押せなかった */
+  .modal-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
   .text-input.label-text-input { width: 55%; max-width: 220px; padding: 7px 10px; margin-bottom: 0; }
   .text-input {
     width: 100%; border: 2px solid #e3e8ee; border-radius: 10px; padding: 12px;
@@ -428,6 +431,7 @@
 <div class="modal-overlay" id="tatamiModal">
   <div class="modal">
     <h2 id="tatamiTitle">洋室 の広さ</h2>
+    <div class="modal-scroll">
     <!-- 図面に書く名前。種類(色・合計の数え方)はそのままで、書く名前だけ変える。空なら種類の名前 -->
     <div class="field-row" id="labelTextRow">
       <label for="labelTextInput">図面に書く名前</label>
@@ -504,6 +508,7 @@
         <button id="btnLabelPosReset" title="室名を自動の位置に戻す">自動</button>
       </div>
     </div>
+    </div><!-- /modal-scroll -->
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteRoomInModal" style="display:none;">この部屋を削除</button>
       <button class="btn" id="btnChangeRoomType" style="display:none;">種類を変更</button>
@@ -5478,6 +5483,7 @@ function stepTatami(d) {
 }
 
 function openTatamiModal(type, tatami, sourceText, isEdit) {
+  $("tatamiModal").querySelector(".modal-scroll").scrollTop = 0;   // 開くたびに上から
   $("tatamiTitle").textContent = `${type.label} の広さ`;
   // 手で直した部屋を開き直したとき「マス目から自動計算」と出ていた(事実と違う)
   const 手直し = isEdit && editingRoom && editingRoom.tatamiManual;
