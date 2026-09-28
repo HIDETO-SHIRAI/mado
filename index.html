@@ -1031,7 +1031,7 @@ const ROOM_TYPES = [
   { key: "ldk", label: "LDK", em: "🍽️", color: "#fff3e0", stroke: "#f0b26a" },
   { key: "kitchen", label: "キッチン", em: "🍳", color: "#fff8e1", stroke: "#e0a95f" },
   { key: "washitsu", label: "和室", em: "🎎", color: "#f1f8e9", stroke: "#9ccf6a" },
-  { key: "genkan", label: "玄関", em: "🚪", color: "#f5f0ff", stroke: "#b39ddb", hideTatami: true },
+  { key: "genkan", label: "玄関", em: "🚪", color: "#ececec", stroke: "#b39ddb", hideTatami: true },
   // 塗り色・枠線とも、キャンバス背景(白)に対してうっすらとした差しか無く、
   // 意図して描いた通路なのか単なる余白なのか判別しづらいという指摘があったため、
   // 色相は無彩色のまま(廊下らしい控えめさは保ちつつ)濃さだけを強めた(再調査で発見)。
@@ -1043,9 +1043,9 @@ const ROOM_TYPES = [
   { key: "wc", label: "トイレ", em: "🚽", color: "#e0f7fa", stroke: "#4dd0e1", hideTatami: true },
   { key: "yokushitsu", label: "浴室", em: "🛁", color: "#e1f5fe", stroke: "#4fc3f7", hideTatami: true },
   { key: "senmen", label: "洗面所", em: "🚰", color: "#e8f5e9", stroke: "#81c784", hideTatami: true },
-  { key: "oshiire", label: "押入", em: "📦", color: "#fdf6e3", stroke: "#d6c26a", hideTatami: true },
-  { key: "shuno", label: "収納", em: "🗄️", color: "#f5f0e3", stroke: "#c9a96a", hideTatami: true },
-  { key: "wic", label: "WIC", em: "👚", color: "#f3ecf8", stroke: "#a985c9" },
+  { key: "oshiire", label: "押入", em: "📦", color: "#e3d7b0", stroke: "#d6c26a", hideTatami: true },
+  { key: "shuno", label: "収納", em: "🗄️", color: "#e3d7b0", stroke: "#c9a96a", hideTatami: true },
+  { key: "wic", label: "WIC", em: "👚", color: "#e8ddbb", stroke: "#a985c9" },
   { key: "kaidan", label: "階段", em: "🪜", color: "#eef1f4", stroke: "#8b96a3", hideTatami: true },
   { key: "ut", label: "UT", em: "🧺", color: "#e9f4f5", stroke: "#6bb0b8" },
   // ベランダ・柱等のデッドスペースは、専有面積に含めない不動産実務の慣習に
@@ -1461,7 +1461,31 @@ function render() {
 
 // 玄関・収納系は不動産図面の慣習に合わせ、斜めハッチング(斜線模様)で
 // 「土間・棚板のある空間」であることを表現する(WebCAD等の完成図を参考)。
+// ★2026-09-28 斜線を使うのは「シンプル」の配色(全室同じ色で、線と斜線で区別する)だけにした。
+//   カラーの配色では、収納・押入・WICは無地のカーキ、玄関はタイルの目地、UTは無地。
+//   レインズの図面を9枚拡大したところ、収納はすべて無地(カーキ・黄・橙)で、斜線は1枚も無かった。
+//   デッドスペースは「部屋ではない」印なので、カラーでも斜線のまま。
 const HATCH_ROOM_KEYS = ["genkan", "oshiire", "shuno", "wic", "ut", "veranda", "deadspace"];
+const カラーでも斜線 = ["deadspace"];
+// 玄関の土間のタイル(300mm角 ≒ 1/3マス)。目地は図面の原点に揃える(隣の部屋とずれない)
+function drawTileFill(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const 目 = BASE_CELL * view.scale / 3;
+  if (!(目 >= 3)) return;   // 小さく表示しているときは描かない(線が詰まって灰色の面になる)
+  const o = gridToScreen(0, 0);
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  dctx.strokeStyle = "rgba(60,60,60,0.22)";
+  dctx.lineWidth = 0.8;
+  dctx.beginPath();
+  for (let x = o.x + Math.ceil((minX - o.x) / 目) * 目; x < maxX; x += 目) { dctx.moveTo(x, minY); dctx.lineTo(x, maxY); }
+  for (let y = o.y + Math.ceil((minY - o.y) / 目) * 目; y < maxY; y += 目) { dctx.moveTo(minX, y); dctx.lineTo(maxX, y); }
+  dctx.stroke();
+  dctx.restore();
+}
 function drawHatchFill(room) {
   const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
@@ -1951,7 +1975,10 @@ function drawRoomFill(room) {
   roomPath(room);
   dctx.fillStyle = colorScheme === "simple" ? SIMPLE_FILL : type.color;
   dctx.fill();
-  if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
+  if (colorScheme === "simple") {
+    if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
+  } else if (room.typeKey === "genkan") drawTileFill(room);
+  else if (カラーでも斜線.includes(room.typeKey)) drawHatchFill(room);
 }
 
 // (2) 壁。建具のあるところは描かない = そこが開口部になる
