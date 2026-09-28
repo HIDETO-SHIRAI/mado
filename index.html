@@ -3101,6 +3101,27 @@ function doorSegment(room, door) {
   return { s1, s2, edgeLen, ux, uy, nx, ny, windingSign, center, a, b, doorWidth, widthMasu };
 }
 
+// 点 p(画面)の上に壁があるか。線の両側(法線の向きに少しずらした2点)が別の部屋、または片方が外なら壁。
+// 建物の外(両側とも外)や、部屋の中を突き抜ける所(両側とも同じ部屋)は壁ではない。
+function 壁がある所か(p, nx, ny) {
+  const e = 2;
+  const どの部屋 = (x, y) => state.rooms.findIndex((r) => pointInRoomScreen(r, x, y));
+  return どの部屋(p.x + nx * e, p.y + ny * e) !== どの部屋(p.x - nx * e, p.y - ny * e);
+}
+// 片引き戸の戸袋(引き込む先を示す点線)の先の点。開口の端 base から壁に沿って 長さ 伸ばすが、
+// 壁が途切れる所で止める。★2026-09-28 壁の端に近い引き戸では、点線が建物の外まで突き出ていた
+// (レインズの図面と比べて見つけた。押入の引き戸・浴室の引き戸で実際に起きた)。
+function 戸袋の先(base, dx, dy, 長さ, nx, ny) {
+  const 刻み = 2;
+  let 届く = 0;
+  for (let t = 刻み; t <= 長さ; t += 刻み) {
+    if (!壁がある所か({ x: base.x + dx * t, y: base.y + dy * t }, nx, ny)) break;
+    届く = t;
+  }
+  if (長さ - 届く < 刻み) 届く = 長さ;   // 最後まで壁があれば、元の長さぴったりに
+  return { x: base.x + dx * 届く, y: base.y + dy * 届く };
+}
+
 // 引き戸の戸板を1枚描く。開口の中の p→q に、壁の中心から off だけずらした
 // 細長い長方形を置く。線1本だと「戸」に見えず、引き違いの重なりも分からない
 // (4本の平行線で表していた頃は「柵」に見えるという問題があった)。
@@ -3190,8 +3211,8 @@ function drawDoorMark(room, door) {
     const off = 2.2 * zs;
     dctx.lineWidth = 1.6 * zs;
     drawSlideLeaf(a, b, ux, uy, nx, ny, off, 2.6 * zs);
-    const ext = flip ? { x: b.x + ux * doorWidth * 0.9, y: b.y + uy * doorWidth * 0.9 } : { x: a.x - ux * doorWidth * 0.9, y: a.y - uy * doorWidth * 0.9 };
     const base = flip ? b : a;
+    const ext = 戸袋の先(base, flip ? ux : -ux, flip ? uy : -uy, doorWidth * 0.9, g.nx, g.ny);
     dctx.lineWidth = 1.6 * zs;
     dctx.setLineDash([3, 3]);
     dctx.beginPath();
