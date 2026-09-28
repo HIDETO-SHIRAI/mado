@@ -6,7 +6,7 @@
 <!-- この版。ブラウザ(特にiOSでホーム画面に追加したアプリ)が古いHTMLを
      キャッシュから出し続けていないかを起動時に確かめるために使う。
      ★公開(push)のたびにこの値を更新すること。 -->
-<meta name="app-version" content="2026-09-14-8">
+<meta name="app-version" content="2026-09-28-1">
 <title>間取りメモ - 簡易作図</title>
 <!-- スマホのホーム画面に追加した時、ブラウザのアドレスバー等を出さない
      「アプリらしい」全画面(スタンドアロン)表示にするための設定一式。 -->
@@ -220,6 +220,11 @@
   /* 「大きさ」の±(グレー)と「壁に沿って動かす」の◀▶(青)を色・記号の両方で
      区別し、寸法変更と位置移動を取り違えないようにする(実機フィードバックで指摘)。 */
   .stepper-pos button { background: #e3ecfd; color: var(--accent); }
+  /* 室名の位置：4つの矢印と「自動」を1行に収める(幅375pxのスマホで折り返さないよう少し小さく) */
+  .stepper.label-pos { gap: 6px; }
+  .stepper.label-pos button { width: 34px; height: 34px; font-size: 14px; }
+  .stepper.label-pos #btnLabelPosReset { width: auto; padding: 0 9px; font-size: 13px; background: #eef1f5; color: var(--text); }
+  .stepper.label-pos #btnLabelPosReset[disabled] { opacity: .35; }
   .val small { font-weight: 400; color: var(--muted); font-size: 11px; }
   #tatamiValue {
     width: 64px; text-align: center; font-size: 16px; font-weight: 700; font-family: inherit;
@@ -445,6 +450,17 @@
     <div class="field-row" id="fixtureSizeRow" style="display:none;">
       <label>設備の大きさ<br><small id="fixtureSizeText">幅 − × 奥行き − mm</small></label>
       <button class="iconbtn" id="btnFixtureReset">自動に戻す</button>
+    </div>
+    <!-- 室名の位置。図面で文字をドラッグしても動かせるが、ドラッグが苦手な人のためにボタンでも(建具の◀▶と同じ考え方) -->
+    <div class="field-row" id="labelPosRow" style="display:none;">
+      <label>室名の位置<br><small id="labelPosText">自動</small></label>
+      <div class="stepper stepper-pos label-pos">
+        <button id="labelPosLeft" title="室名を左へ">◀</button>
+        <button id="labelPosUp" title="室名を上へ">▲</button>
+        <button id="labelPosDown" title="室名を下へ">▼</button>
+        <button id="labelPosRight" title="室名を右へ">▶</button>
+        <button id="btnLabelPosReset" title="室名を自動の位置に戻す">自動</button>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn danger" id="btnDeleteRoomInModal" style="display:none;">この部屋を削除</button>
@@ -1177,6 +1193,7 @@ let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の�
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
 let 設備の大きさドラッグ = null; // 設備の枠のつまみ(角・辺)を引っ張って大きさを変えている間の状態
+let 室名ドラッグ = null; // 選んだ部屋の室名の文字をつかんでいる間の状態(動かさずに離したら、ただのタップ)
 let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
 let 壁ドラッグ = null; // 壁の長さの数字をつかんで、壁を平行に動かしている間の状態(パソコン)
 let 選んだ壁 = null;   // {room, edge} 選んだ部屋の中で、矢印キーを効かせる壁(パソコン)
@@ -1398,6 +1415,7 @@ function render() {
     // 壁の長さ(mm)とそのつまみ。パソコンだけ。★角・設備のつまみより先に描く(重なったら、上に見える
     //   つまみのほうが掴める。当たり判定の順番と揃える)
     if (マウスで触っているか()) 壁の長さを描く(editingRoom);
+    室名の枠を描く(editingRoom);
     drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom);
   }
 
@@ -1613,13 +1631,281 @@ function 室名を置ける場所(room) {
 }
 
 function pointInRoomScreen(room, x, y) {
-  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  return 点が多角形の中か(room.points.map((p) => gridToScreen(p.gx, p.gy)), x, y);
+}
+function 点が多角形の中か(pts, x, y) {
   let inside = false;
   for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
     const a = pts[i], b = pts[j];
     if ((a.y > y) !== (b.y > y) && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
   }
   return inside;
+}
+
+// ---- 室名の置き場所 ----------------------------------------------------------
+// ★2026-09-28 白井さん「室名の位置が変、手で動かせるようにもしてほしい」。
+//   それまでは「重心から、設備を据える壁の反対へ0.5マス」の決め打ちだったため、
+//     ・幅1マスのトイレ・洗面所では、文字が壁や戸の弧に乗る(0.5マスずらすと反対の壁の手前まで行く)
+//     ・設備を手で動かしても、室名は「動かす前の設備」を避けたまま(今の設備に重なる)
+//     ・L字の部屋では、重心がちょうど内側の角の高さに来て、文字が角の線にまたがる
+//   → 部屋の中を細かく探して、壁・設備・内開きの戸の弧から離れていて、なるべく
+//     部屋の真ん中(重心)に近い所に置く。手で動かした位置(room.labelPos)があれば、それが優先。
+// ★階段は探さない。矢じりを避けて上り口の側へ寄せる、これまでの置き方のまま(階段の室名の位置)。
+const 室名の余白_マス = 0.3;   // 壁・設備からこれだけ離れていれば十分。それより先は「真ん中に近い方」で選ぶ
+
+function 畳の文字(room) {
+  // 和室は畳が実際に敷いてあるので実寸だが、それ以外は畳に換算した目安なので
+  // 「約」を付ける(2026-09-08 笹原さんの要望)。
+  return (roomType(room).key === "washitsu" ? "" : "約") + `${formatTatami(room.tatami)}帖`;
+}
+
+// 室名の文字の枠の大きさ(画面のpx)。drawRoomDecor が描き始める大きさ・行と同じ。
+// ★文字は拡大しても大きくならない(部屋だけが大きくなる)。だから置き場所は倍率ごとに決める。
+//   倍率1・書き出しの大きさ(19px)で一度だけ決めて使い回したら、1.6倍の画面では
+//   トイレの便器の左に文字が収まる余地があるのに、便器に重ねていた。
+//   書き出しは isExportRender の間に、書き出しの文字の大きさで決め直す。
+function 室名の枠の大きさ(room) {
+  const type = roomType(room);
+  const 面積 = polygonScreenArea(room.points);
+  const size = (面積 < 2400 ? 13 : 15) + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+  const 行 = type.hideTatami ? [type.label] : (面積 < 1600 ? [畳の文字(room)] : [type.label, 畳の文字(room)]);
+  dctx.save();
+  dctx.font = `${size}px -apple-system, sans-serif`;
+  const w = Math.max(...行.map((l) => dctx.measureText(l).width)) + 4;   // 白い縁取りの分
+  dctx.restore();
+  return { w, h: 行.length * (size + 3) + 2 };
+}
+
+// 室名が避けるもの(画面の座標の多角形)。{ 設備: [設備の枠], 弧: [内開きの開き戸が振れる範囲(4分の1の円)] }
+// 外開きの戸は部屋の外へ振れる。引き戸・窓は壁の上だけなので避けなくてよい。
+// ★設備と弧を分けて持つのは、どうしても重なる狭い部屋で「弧に重ねる」ほうを選ぶため。
+//   弧の中は床で、線は弧と戸板の2本だけ。設備の絵は線が込み入っていて、文字が読めなくなる。
+function 室名が避けるもの(room) {
+  const 設備 = [], 弧 = [];
+  if (roomHasFixture(room)) {
+    const 枠 = 設備の枠(room);
+    if (枠) 設備.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ix, iy]) => 枠.点(ix * 枠.hw, iy * 枠.hd)));
+  }
+  (room.doors || []).forEach((d) => {
+    if (!isSwingDoor(d) || d.swingOut) return;
+    const g = doorSegment(room, d);
+    if (!g) return;
+    // 吊元を中心に、壁沿いの向きから室内の向きまで回る扇形(drawHingeLeaf の弧と同じ範囲)
+    const 扇 = (中心, ux, uy, r) => {
+      const 点 = [中心];
+      for (let k = 0; k <= 6; k++) {
+        const t = (k / 6) * (Math.PI / 2);
+        点.push({ x: 中心.x + (ux * Math.cos(t) + g.nx * Math.sin(t)) * r, y: 中心.y + (uy * Math.cos(t) + g.ny * Math.sin(t)) * r });
+      }
+      return 点;
+    };
+    if (d.type === "hinge_double") {
+      弧.push(扇(g.a, g.ux, g.uy, g.doorWidth / 2));
+      弧.push(扇(g.b, -g.ux, -g.uy, g.doorWidth / 2));
+    } else if (!d.flip) 弧.push(扇(g.a, g.ux, g.uy, g.doorWidth));
+    else 弧.push(扇(g.b, -g.ux, -g.uy, g.doorWidth));
+  });
+  return { 設備, 弧 };
+}
+
+// 線分 a→b と、箱(左 L・上 T・右 R・下 B)のいちばん近い距離。線分が箱を通れば 0。
+function 線分と箱の距離(a, b, L, T, R, B) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  // 箱で線分を切り取ってみて、残れば通っている(Liang–Barsky)
+  const p = [-dx, dx, -dy, dy], q = [a.x - L, R - a.x, a.y - T, B - a.y];
+  let t0 = 0, t1 = 1, 通る = true;
+  for (let i = 0; i < 4 && 通る; i++) {
+    if (p[i] === 0) { if (q[i] < 0) 通る = false; continue; }
+    const r = q[i] / p[i];
+    if (p[i] < 0) { if (r > t1) 通る = false; else if (r > t0) t0 = r; }
+    else { if (r < t0) 通る = false; else if (r < t1) t1 = r; }
+  }
+  if (通る) return 0;
+  const 点と箱 = (x, y) => Math.hypot(Math.max(L - x, 0, x - R), Math.max(T - y, 0, y - B));
+  const len2 = dx * dx + dy * dy;
+  const 点と線分 = (x, y) => {
+    const t = len2 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2)) : 0;
+    return Math.hypot(x - (a.x + dx * t), y - (a.y + dy * t));
+  };
+  return Math.min(点と箱(a.x, a.y), 点と箱(b.x, b.y), 点と線分(L, T), 点と線分(R, T), 点と線分(R, B), 点と線分(L, B));
+}
+
+// 部屋の中を細かく区切って、室名の枠を置いてみる。良し悪しの順は
+//   ① 枠が部屋からはみ出さない ② 設備に重ならない ③ 戸の弧に重ならない
+//   ④ 壁・設備・弧から 室名の余白_マス 離れている ⑤ 重心に近い
+// ④を「余白まで」で打ち切るので、広い部屋ではこれまでどおり真ん中、狭い部屋では空いている所の真ん中になる。
+// 戻り値は図面の座標(マス)。置ける所が無ければ null。
+function 室名の置き場所を探す(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  if (pts.length < 3) return null;
+  const cell = BASE_CELL * view.scale;
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (!(x1 > x0 && y1 > y0)) return null;
+  // 部屋より大きい文字は、描くときに縮めて収める(drawRoomDecor の fitLines)。探すときも縮めておく。
+  // ★下の「壁の分」(両側3px)を足しても部屋に対して数pxの遊びが残るように、12px 引く
+  //   (8px だと幅1マスのトイレで遊びが2pxしかなく、探す目が飛び越えて便器に重ねていた)
+  const 枠 = 室名の枠の大きさ(room);
+  const w = Math.max(4, Math.min(枠.w, x1 - x0 - 12)), h = Math.max(4, Math.min(枠.h, y1 - y0 - 12));
+  const { 設備, 弧 } = 室名が避けるもの(room);
+  const 重心 = polygonCentroidScreen(room.points);
+  const 十分 = Math.max(8, 室名の余白_マス * cell);
+  const 評価 = (x, y) => {
+    if (!点が多角形の中か(pts, x, y)) return null;
+    const L = x - w / 2, R = x + w / 2, T = y - h / 2, B = y + h / 2;
+    // 枠の中に 9×5 の点を打って、部屋の外・設備の中・弧の中にある点を数える(重なりの広さの目安)。
+    // 部屋の外は、枠を 壁の分 だけ広げて見る(壁の線は3pxで半分が部屋の中。文字が壁の線に触れないように)
+    let 外 = 0, 設 = 0, 振 = 0;
+    const 壁の分 = 3;
+    for (let i = 0; i <= 8; i++) {
+      for (let j = 0; j <= 4; j++) {
+        const px = L + (w * i) / 8, py = T + (h * j) / 4;
+        const ox = px + 壁の分 * (i / 4 - 1), oy = py + 壁の分 * (j / 2 - 1);
+        if (!点が多角形の中か(pts, ox, oy)) 外++;
+        else if (設備.some((o) => 点が多角形の中か(o, px, py))) 設++;
+        else if (弧.some((o) => 点が多角形の中か(o, px, py))) 振++;
+      }
+    }
+    let 間 = 十分;
+    const 測る = (poly) => {
+      for (let i = 0; i < poly.length && 間 > 0; i++) 間 = Math.min(間, 線分と箱の距離(poly[i], poly[(i + 1) % poly.length], L, T, R, B));
+    };
+    測る(pts);
+    設備.forEach(測る);
+    弧.forEach(測る);
+    return { x, y, 外, 設, 振, 間, 遠さ: Math.hypot(x - 重心.x, y - 重心.y) };
+  };
+  const より良い = (a, b) => {
+    if (!b) return true;
+    if (a.外 !== b.外) return a.外 < b.外;
+    if (a.設 !== b.設) return a.設 < b.設;
+    if (a.振 !== b.振) return a.振 < b.振;
+    if (Math.abs(a.間 - b.間) > cell * 0.02) return a.間 > b.間;
+    return a.遠さ < b.遠さ;
+  };
+  let best = 評価(重心.x, 重心.y);
+  // 真ん中で何にも触れず余白も足りていれば、それより良い所は無い(広い洋室・LDKはほとんどここで終わる)。
+  // ★拡大・縮小のたびに探し直すので、ここで抜けないと指2本の拡大が重くなる
+  if (best && !best.外 && !best.設 && !best.振 && best.間 >= 十分) return screenToGridRaw(best.x, best.y);
+  // 探す目は重心を通るように並べる(重心の縦・横の線上が必ず入る。細長い部屋では、そこしか収まらないことが多い)
+  const 刻み = Math.max((x1 - x0) / 24, (y1 - y0) / 24, cell * 0.05);
+  const 始x = 重心.x - Math.floor((重心.x - x0) / 刻み) * 刻み, 始y = 重心.y - Math.floor((重心.y - y0) / 刻み) * 刻み;
+  for (let x = 始x; x < x1; x += 刻み) {
+    for (let y = 始y; y < y1; y += 刻み) {
+      const e = 評価(x, y);
+      if (e && より良い(e, best)) best = e;
+    }
+  }
+  if (!best) return null;
+  // 見つけた所のまわりを、4倍細かく探し直す
+  const 細 = 刻み / 4, bx = best.x, by = best.y;
+  for (let i = -4; i <= 4; i++) {
+    for (let j = -4; j <= 4; j++) {
+      const e = 評価(bx + i * 細, by + j * 細);
+      if (e && より良い(e, best)) best = e;
+    }
+  }
+  return screenToGridRaw(best.x, best.y);
+}
+
+// 探した結果は、部屋の形・戸・設備・畳数・倍率が変わるまで使い回す(描き直しは指を動かすたびに走る)。
+// 図面の座標で持つので、スクロールでは探し直さない。倍率は5%刻みで見る(指2本の拡大の途中で毎回探さない)。
+const 室名の位置の控え = new WeakMap();
+function 室名の自動の位置(room) {
+  if (room.typeKey === "kaidan") return 階段の室名の位置(room);
+  const 倍率の段 = Math.round(Math.log(view.scale) / Math.log(1.05));
+  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami,
+    room.fixturePos, room.fixtureSize, room.fixtureRotation, roomHasFixture(room), 倍率の段, isExportRender]);
+  let 控え = 室名の位置の控え.get(room);
+  if (!控え || 控え.key !== key) {
+    控え = { key, g: 室名の置き場所を探す(room) };
+    室名の位置の控え.set(room, 控え);
+  }
+  if (!控え.g) return polygonCentroidScreen(room.points);
+  return gridToScreen(控え.g.gx, 控え.g.gy);
+}
+
+function 階段の室名の位置(room) {
+  const c = polygonCentroidScreen(room.points);
+  let labelX = c.x, labelY = c.y;
+  // 階段は上りの矢印が部屋の真ん中を通るので、室名を端へ寄せる。
+  // ★寄せる先は「矢印の始点側」。矢じりのある側へ寄せると、室名の白い縁取り
+  //   (lineWidth 3)が矢じりを塗り潰し、どちらへ上るのか読めなくなっていた。
+  //   既定の向き(0°)は下から上へ上るので、室名は下端へ寄せる。
+  const ys = room.points.map((p) => gridToScreen(p.gx, p.gy).y);
+  const 上端 = Math.min(...ys), 下端 = Math.max(...ys);
+  const r = room.stairRotation != null ? room.stairRotation : (room.stairFlip ? 180 : 0);
+  const 矢じりが上 = !(r === 180 || r === 270);
+  const 寄せ = Math.min(20, (下端 - 上端) * 0.14) + 10;
+  const 候補 = 矢じりが上 ? 下端 - 寄せ : 上端 + 寄せ;
+  if (pointInRoomScreen(room, labelX, 候補)) labelY = 候補;
+  // 重心が部屋の外に出る形(細いL字・コの字)では、室名が部屋の外の白紙に浮く。
+  // 重心は面積の釣り合う点であって、部屋の中にあるとは限らない。
+  // 部屋の外なら、いちばん幅の広いところの中心へ逃がす。
+  if (!pointInRoomScreen(room, labelX, labelY)) {
+    const 場所 = 室名を置ける場所(room);
+    if (場所) { labelX = 場所.x; labelY = 場所.y; }
+  }
+  return { x: labelX, y: labelY };
+}
+
+// 手で動かした室名の位置(画面の座標)。★壁を動かすなどして部屋の外になったら使わない
+// (消さずに持っておく。形を戻せば、また手で置いた所に出る)。
+function 手で置いた室名の位置(room) {
+  const g = room.labelPos;
+  if (!g || !Number.isFinite(g.gx) || !Number.isFinite(g.gy)) return null;
+  if (!isPointInPolygonGrid(g.gx, g.gy, room.points)) return null;
+  return gridToScreen(g.gx, g.gy);
+}
+function 室名の位置(room) { return 手で置いた室名の位置(room) || 室名の自動の位置(room); }
+function 室名の位置の図面座標(room) { const p = 室名の位置(room); return screenToGridRaw(p.x, p.y); }
+
+// 画面に描いた室名の枠(つかめる範囲)。書き出しでは覚えない
+const 室名の描いた枠 = new WeakMap();
+function 室名に当たるか(room, sx, sy) {
+  if (!room || roomType(room).noLabel) return false;
+  const f = 室名の描いた枠.get(room);
+  if (!f) return false;
+  // 小さい文字(トイレ・階段)でも指でつかめるよう、最低 40×28px は取る
+  const hw = Math.max(f.w / 2 + 6, 20), hh = Math.max(f.h / 2 + 4, 14);
+  return Math.abs(sx - f.x) <= hw && Math.abs(sy - f.y) <= hh;
+}
+// 選んだ部屋で、押した所に当たるつまみ { 角: 頂点の番号|null, 角の距離, 設備: 設備のつまみに当たるか の結果|null }。
+// ★室名の点線の枠の中では、つまみは「描いてある形の上」を押したときだけ当たりにする。
+//   当たりは描いた形より広い(角 20px に対し丸は9px、設備の中心 22px に対し14px、大きさ 16px に対し四角10px)ので、
+//   狭いトイレでは便器の大きさのつまみの当たりが室名を覆い、室名をつかむと便器の大きさが変わっていた。
+const つまみの描いた大きさ = { 角: 9, 回す: 11, 動かす: 14, 大きさ: 7 };
+function 選んだ部屋のつまみ(room, sx, sy) {
+  let 角 = hitTestVertexHandle(room, sx, sy);
+  let 設備 = 設備のつまみに当たるか(room, sx, sy);
+  let 角の距離 = Infinity;
+  if (角 !== null) {
+    const p = gridToScreen(room.points[角].gx, room.points[角].gy);
+    角の距離 = Math.hypot(sx - p.x, sy - p.y);
+  }
+  if (室名の枠の中か(room, sx, sy)) {
+    if (角の距離 > つまみの描いた大きさ.角) { 角 = null; 角の距離 = Infinity; }
+    if (設備 && 設備.距離 > つまみの描いた大きさ[設備.種類]) 設備 = null;
+  }
+  return { 角, 角の距離, 設備 };
+}
+// 点線の枠(室名の枠を描く)そのものの中か。建具・つまみと取り合うときは、広げた当たりではなくこちらで見る
+function 室名の枠の中か(room, sx, sy) {
+  if (!room || roomType(room).noLabel) return false;
+  const f = 室名の描いた枠.get(room);
+  return !!f && Math.abs(sx - f.x) <= f.w / 2 + 5 && Math.abs(sy - f.y) <= f.h / 2 + 3;
+}
+// 選んだ部屋の室名を点線で囲む(つかんで動かせると分かるように)。設備のつまみと同じ紫
+function 室名の枠を描く(room) {
+  if (!room || roomType(room).noLabel) return;
+  const f = 室名の描いた枠.get(room);
+  if (!f) return;
+  dctx.save();
+  角丸の四角(f.x - f.w / 2 - 5, f.y - f.h / 2 - 3, f.w + 10, f.h + 6, 5);
+  dctx.setLineDash([3, 3]);
+  dctx.strokeStyle = "#6f4fed"; dctx.lineWidth = 1.4;
+  dctx.stroke();
+  dctx.restore();
 }
 
 // ---- 4段の描画 -----------------------------------------------------------
@@ -1670,7 +1956,6 @@ function drawRoomDoors(room) {
 // (4) 階段・設備の絵と、室名の文字
 function drawRoomDecor(room) {
   const type = roomType(room);
-  const c = polygonCentroidScreen(room.points);
   const areaPx = polygonScreenArea(room.points);
   const hasFixture = roomHasFixture(room);
   dctx.save();
@@ -1692,37 +1977,8 @@ function drawRoomDecor(room) {
   // 廊下など、室名も広さも表示する意味がない部屋種別はラベル描画自体を省略する
   if (type.noLabel) return;
 
-  // 設備は壁際に据えてあるので、室名はその反対側(部屋の奥)へ寄せる。
-  // 中心に置くと浴槽や便器の線と重なって読みにくかった。
-  let labelX = c.x, labelY = c.y;
-  if (room.typeKey === "kaidan") {
-    // 階段は上りの矢印が部屋の真ん中を通るので、室名を端へ寄せる。
-    // ★寄せる先は「矢印の始点側」。矢じりのある側へ寄せると、室名の白い縁取り
-    //   (lineWidth 3)が矢じりを塗り潰し、どちらへ上るのか読めなくなっていた。
-    //   既定の向き(0°)は下から上へ上るので、室名は下端へ寄せる。
-    const ys = room.points.map((p) => gridToScreen(p.gx, p.gy).y);
-    const 上端 = Math.min(...ys), 下端 = Math.max(...ys);
-    const r = room.stairRotation != null ? room.stairRotation : (room.stairFlip ? 180 : 0);
-    const 矢じりが上 = !(r === 180 || r === 270);
-    const 寄せ = Math.min(20, (下端 - 上端) * 0.14) + 10;
-    const 候補 = 矢じりが上 ? 下端 - 寄せ : 上端 + 寄せ;
-    if (pointInRoomScreen(room, labelX, 候補)) labelY = 候補;
-  }
-  if (hasFixture) {
-    const wall = 設備を据える壁(room);
-    if (wall) {
-      const d = BASE_CELL * view.scale * 0.5;
-      const 候補 = { x: c.x + wall.nx * d, y: c.y + wall.ny * d };
-      if (pointInRoomScreen(room, 候補.x, 候補.y)) { labelX = 候補.x; labelY = 候補.y; }
-    }
-  }
-  // 重心が部屋の外に出る形(細いL字・コの字)では、室名が部屋の外の白紙に浮く。
-  // 重心は面積の釣り合う点であって、部屋の中にあるとは限らない。
-  // 部屋の外なら、いちばん幅の広いところの中心へ逃がす。
-  if (!pointInRoomScreen(room, labelX, labelY)) {
-    const 場所 = 室名を置ける場所(room);
-    if (場所) { labelX = 場所.x; labelY = 場所.y; }
-  }
+  // 置き場所は 室名の位置(room)：手で動かした位置、無ければ壁・設備・戸の弧を避けて探した位置
+  const { x: labelX, y: labelY } = 室名の位置(room);
 
   const screenPts = room.points.map((p) => gridToScreen(p.gx, p.gy));
   const boxW = Math.max(...screenPts.map((p) => p.x)) - Math.min(...screenPts.map((p) => p.x));
@@ -1761,9 +2017,7 @@ function drawRoomDecor(room) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
     result = fitLines(type.label, startSize);
   } else {
-    // 和室は畳が実際に敷いてあるので実寸だが、それ以外は畳に換算した目安なので
-    // 「約」を付ける(2026-09-08 笹原さんの要望)。
-    const tatamiText = (type.key === "washitsu" ? "" : "約") + `${formatTatami(room.tatami)}帖`;
+    const tatamiText = 畳の文字(room);
     result = fitLines(areaPx < 1600 ? tatamiText : `${type.label}\n${tatamiText}`, startSize);
     if (!result.fits && result.lines.length > 1) {
       result = fitLines(tatamiText, startSize);
@@ -1781,6 +2035,11 @@ function drawRoomDecor(room) {
     dctx.strokeText(line, labelX, ly);
     dctx.fillText(line, labelX, ly);
   });
+  // つかめる範囲として覚えておく(室名に当たるか)。書き出しの文字の大きさは画面と違うので覚えない
+  if (!isExportRender) {
+    const 幅 = Math.max(...result.lines.map((l) => dctx.measureText(l).width));
+    室名の描いた枠.set(room, { x: labelX, y: labelY, w: 幅, h: result.lines.length * (result.size + 3) });
+  }
 }
 
 // 部屋種別に応じて自動描画する設備の線画。不動産図面の慣習(絵文字ではなく線画+略記)に合わせ、
@@ -3198,6 +3457,8 @@ let pendingSingleTouch = null; // {timer, pointerId, sx, sy}
 function startPinch() {
   if (pendingSingleTouch) { clearTimeout(pendingSingleTouch.timer); pendingSingleTouch = null; }
   isPointerDrawing = false;
+  // 室名をつかんだだけで2本目の指が来たら、つかんだのは無しにする(離したときに「タップ」と見て編集メニューが開くため)
+  if (室名ドラッグ && !室名ドラッグ.動き出した) 室名ドラッグ = null;
   const pts = [...pointers.values()];
   const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
@@ -3252,12 +3513,8 @@ let drawStartWasDeselectTap = false; // 今回の描画開始が「選択解除�
 function tryRoomSelectionTap(sx, sy) {
   lastTapWasDeselect = false;
   if (editingRoom) {
-    const hIdx = hitTestVertexHandle(editingRoom, sx, sy);
-    const 設備 = 設備のつまみに当たるか(editingRoom, sx, sy);
+    const { 角: hIdx, 角の距離, 設備 } = 選んだ部屋のつまみ(editingRoom, sx, sy);
     // 部屋の角と設備のつまみが両方届くときは近い方(壁いっぱいのキッチンは、枠の角が部屋の角のすぐそばに来る)
-    const 角の距離 = hIdx !== null
-      ? Math.hypot(sx - gridToScreen(editingRoom.points[hIdx].gx, editingRoom.points[hIdx].gy).x, sy - gridToScreen(editingRoom.points[hIdx].gx, editingRoom.points[hIdx].gy).y)
-      : Infinity;
     if (hIdx !== null && !(設備 && 設備.距離 < 角の距離)) {
       snapshot();
       vertexDrag = { room: editingRoom, index: hIdx };
@@ -3282,6 +3539,15 @@ function tryRoomSelectionTap(sx, sy) {
       render();
       return true;
     }
+    // 室名の文字。★室名は部屋の真ん中にあるので、「もう一度タップして編集メニュー」もここに当たる。
+    //   動かさずに離したら従来どおり編集メニューを開き、動かしたときだけ室名を動かす(建具と同じ分け方)
+    if (室名に当たるか(editingRoom, sx, sy)) {
+      室名ドラッグ = {
+        room: editingRoom, 始めのJSON: JSON.stringify(state.rooms), 積んだ: false,
+        始めの画面: { x: sx, y: sy }, 始めの位置: 室名の位置の図面座標(editingRoom), 動き出した: false,
+      };
+      return true;
+    }
   }
   const w = screenToGridRaw(sx, sy);
   const room = hitTestRoom(w.gx, w.gy);
@@ -3301,9 +3567,10 @@ function tryRoomSelectionTap(sx, sy) {
     // ★マウスのときは、選んだ部屋に効くキーを添える(知らなければ使われない)。
     const キーの案内 = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
       ? "" : "（壁の長さの数字をドラッグすると壁が動きます。Delete で削除、矢印キーで移動）";
+    const 室名の案内 = roomType(room).noLabel ? "" : "室名は点線の枠ごとドラッグで動かせます。";
     showHint((roomHasFixture(room)
-      ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを、枠の四角いつまみで大きさを調整できます(つまみが出ないときは拡大)"
-      : "頂点をドラッグで形を調整できます。もう一度タップすると編集メニューが開きます") + キーの案内);
+      ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを、枠の四角いつまみで大きさを調整できます(つまみが出ないときは拡大)。" + 室名の案内
+      : "頂点をドラッグで形を調整できます。" + 室名の案内 + "もう一度タップすると編集メニューが開きます") + キーの案内);
     return true;
   }
   if (editingRoom) {
@@ -3354,7 +3621,10 @@ function handleSingleTouchStart(sx, sy) {
   // 既存の建具をタップした場合はその場で編集モーダルを開くようにする。
   if (isFreshTap) {
     const existingDoor = hitTestExistingDoor(sx, sy);
-    if (existingDoor) {
+    // ★選んだ部屋の室名(点線の枠の中)は、建具より先に掴む。狭いトイレ・洗面所では室名が戸の弧の
+    //   上にあり(開き戸の当たりは弧の向きへ戸の幅だけ伸びる)、室名をつかもうとすると建具の画面が開いていた。
+    //   枠の外なら建具はこれまでどおり。角・設備のつまみは室名より先(tryRoomSelectionTap の順)
+    if (existingDoor && !(editingRoom && 室名の枠の中か(editingRoom, sx, sy))) {
       openDoorEditModal(existingDoor.room, existingDoor.index);
       return;
     }
@@ -3437,6 +3707,26 @@ drawCanvas.addEventListener("pointermove", (e) => {
       room.fixturePos = candidate;
       render();
     }
+    return;
+  }
+
+  if (室名ドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 室名ドラッグ;
+    // ★タップのつもりの手ぶれで動かさない(動かしたら編集メニューが開かなくなる)
+    if (!d.動き出した) {
+      if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 6) return;
+      d.動き出した = true;
+    }
+    // 指の位置そのものではなく「動いた量」だけ動かす(つかんだ瞬間に跳ねない)
+    const 今 = screenToGridRaw(sx, sy), 始め = screenToGridRaw(d.始めの画面.x, d.始めの画面.y);
+    const g = { gx: d.始めの位置.gx + 今.gx - 始め.gx, gy: d.始めの位置.gy + 今.gy - 始め.gy };
+    // 部屋の外へは出さない(設備と同じ。壁に当たって止まる)
+    if (!isPointInPolygonGrid(g.gx, g.gy, d.room.points)) return;
+    if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+    d.room.labelPos = g;
+    render();
     return;
   }
 
@@ -3645,6 +3935,21 @@ function finalizeActiveDrags() {
   if (fixtureDrag) {
     fixtureDrag = null;
     render(); autoSave();
+    return true;
+  }
+  if (室名ドラッグ) {
+    const d = 室名ドラッグ;
+    室名ドラッグ = null;
+    if (!d.動き出した) {
+      // 動かさずに離した = 選んだ部屋をもう一度タップした(これまでどおり編集メニュー)
+      openRoomEditor(d.room);
+      return true;
+    }
+    render();
+    if (d.積んだ) {
+      autoSave();
+      showHint("室名を動かしました（編集メニューの「室名の位置」の「自動」で元の場所に戻せます）");
+    }
     return true;
   }
   if (fixtureRotateDrag) {
@@ -4191,9 +4496,11 @@ drawCanvas.addEventListener("pointermove", (e) => {
   if (!壁ドラッグ && currentTool === "wall" && drawingPoints.length === 0) {
     const d = 設備の大きさドラッグ;
     if (d) 形 = 設備の大きさのカーソル(d.room, d.ix, d.iy);
+    else if (室名ドラッグ && 室名ドラッグ.動き出した) 形 = "move";
     else if (editingRoom && pointers.size === 0) {
-      const 設備 = 設備のつまみに当たるか(editingRoom, sx, sy);
+      const { 角, 設備 } = 選んだ部屋のつまみ(editingRoom, sx, sy);   // 押したときと同じ決め方
       if (設備) 形 = 設備.種類 === "大きさ" ? 設備の大きさのカーソル(editingRoom, 設備.ix, 設備.iy) : (設備.種類 === "動かす" ? "move" : "grab");
+      else if (角 === null && 室名に当たるか(editingRoom, sx, sy)) 形 = "move";
     }
   }
   if (drawCanvas.style.cursor !== 形) drawCanvas.style.cursor = 形;
@@ -4270,6 +4577,10 @@ function 選んだ部屋を動かす(dx, dy, 大きく) {
   //   部屋だけ動いて設備が元の場所に取り残される(建具は壁の番号と割合なので付いてくる)。
   if (room.fixturePos) {
     room.fixturePos = { gx: 刻みに戻す(room.fixturePos.gx + dx * 歩幅), gy: 刻みに戻す(room.fixturePos.gy + dy * 歩幅) };
+  }
+  // 手で動かした室名も同じく図面上の座標
+  if (room.labelPos) {
+    room.labelPos = { gx: 刻みに戻す(room.labelPos.gx + dx * 歩幅), gy: 刻みに戻す(room.labelPos.gy + dy * 歩幅) };
   }
   render(); autoSave();
 }
@@ -4496,7 +4807,45 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
     }
     $("btnFixtureReset").disabled = !手で;
   }
+  // 室名の位置。新しく描いた部屋(まだ図面に無い)・室名を出さない種類(廊下など)では出さない
+  const 室名の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && !type.noLabel;
+  $("labelPosRow").style.display = 室名の部屋 ? "flex" : "none";
+  室名のボタンで積んだ = false;
+  if (室名の部屋) 室名の位置の表示を更新();
 }
+
+// 室名の位置のボタン。★押したその場で動かす(下から出る画面の上に図面が見えている。建具の◀▶と同じ)。
+//   「戻す」は画面を開いてから最初に押したときだけ積む(何回押しても、戻すは1回で元の位置)。
+let 室名のボタンで積んだ = false;
+const 室名のボタンの歩幅_マス = 0.15;   // 建具の◀▶と同じ
+function 室名の位置の表示を更新() {
+  const room = editingRoom;
+  $("labelPosText").textContent = room && 手で置いた室名の位置(room) ? "手で動かした位置" : "自動";
+  $("btnLabelPosReset").disabled = !(room && room.labelPos);
+}
+function 室名をボタンで動かす(dx, dy) {
+  const room = editingRoom;
+  if (!room) return;
+  const 今 = 室名の位置の図面座標(room);
+  const g = { gx: 今.gx + dx * 室名のボタンの歩幅_マス, gy: 今.gy + dy * 室名のボタンの歩幅_マス };
+  if (!isPointInPolygonGrid(g.gx, g.gy, room.points)) { showHint("これ以上動かすと部屋の外に出ます"); return; }
+  if (!室名のボタンで積んだ) { snapshot(); 室名のボタンで積んだ = true; }
+  room.labelPos = g;
+  render(); autoSave();
+  室名の位置の表示を更新();
+}
+$("labelPosLeft").addEventListener("click", () => 室名をボタンで動かす(-1, 0));
+$("labelPosUp").addEventListener("click", () => 室名をボタンで動かす(0, -1));
+$("labelPosDown").addEventListener("click", () => 室名をボタンで動かす(0, 1));
+$("labelPosRight").addEventListener("click", () => 室名をボタンで動かす(1, 0));
+$("btnLabelPosReset").addEventListener("click", () => {
+  const room = editingRoom;
+  if (!room || !room.labelPos) return;
+  if (!室名のボタンで積んだ) { snapshot(); 室名のボタンで積んだ = true; }
+  delete room.labelPos;
+  render(); autoSave();
+  室名の位置の表示を更新();
+});
 $("btnFixtureReset").addEventListener("click", () => {
   $("tatamiModal").dataset.fixtureReset = "1";
   $("fixtureSizeText").textContent = "確定すると、自動の大きさ・位置・向きに戻ります";
@@ -5013,7 +5362,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
