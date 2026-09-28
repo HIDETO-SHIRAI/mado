@@ -148,6 +148,10 @@
   #toolbar.narrow .tool { font-size: 10px; letter-spacing: -0.03em; padding: 9px 0; }
   #toolbar.narrow .tool .lbl-full { display: none; }
   #toolbar.narrow .tool .lbl-short { display: inline; }
+  /* ★2026-09-28 道具「線」を足してボタンが9つになり、幅375pxで1つ38pxに。4文字(画像保存など)が2行に折れたので、
+     ボタンが細いときは字を少し小さくする(42px 未満で 9px、36px 未満で 8px) */
+  #toolbar.narrow.xs .tool { font-size: 9px; letter-spacing: -0.05em; }
+  #toolbar.narrow.xxs .tool { font-size: 8px; letter-spacing: -0.05em; }
   .tool.active { background: var(--accent); color: #fff; }
 
   /* ---- モーダル共通 ---- */
@@ -373,6 +377,7 @@
   <div id="toolbar">
     <button class="tool active" data-tool="wall"><span class="em">✏️</span><span class="lbl-full">描く/編集</span><span class="lbl-short">描く</span></button>
     <button class="tool" data-tool="door"><span class="em">🚪</span>建具</button>
+    <button class="tool" data-tool="line"><span class="em">📏</span>線</button>
     <button class="tool" id="btnColorScheme"><span class="em">🎨</span><span class="lbl-full" id="colorSchemeLabel">配色:カラー</span><span class="lbl-short" id="colorSchemeLabelShort">カラー</span></button>
     <button class="tool" id="btnExport"><span class="em">🖼️</span><span class="lbl-full">画像で保存</span><span class="lbl-short">画像保存</span></button>
     <button class="tool" id="btnExportTransparent"><span class="em">🎞️</span><span class="lbl-full">透過で保存</span><span class="lbl-short">透過保存</span></button>
@@ -513,6 +518,18 @@
       <button class="btn danger" id="btnDeleteRoomInModal" style="display:none;">この部屋を削除</button>
       <button class="btn" id="btnChangeRoomType" style="display:none;">種類を変更</button>
       <button class="btn primary" id="btnConfirmTatami">これで確定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 線(壁・腰壁/カウンター・塀/フェンス)の画面 -->
+<div class="modal-overlay" id="lineModal">
+  <div class="modal">
+    <h2>線の種類</h2>
+    <div class="door-btn-row" id="lineKindGrid" style="flex:0 0 auto"></div>
+    <div class="modal-actions">
+      <button class="btn danger" id="btnDeleteLine">この線を消す</button>
+      <button class="btn primary" id="btnCloseLine">これで確定</button>
     </div>
   </div>
 </div>
@@ -1497,6 +1514,7 @@ function render() {
   const openings = collectOpenings();            // 壁を開ける区間(全部屋の建具)
   for (const room of state.rooms) drawRoomFill(room);
   for (const room of state.rooms) drawRoomWalls(room, openings);
+  for (const room of state.rooms) 線を描く(room);   // 線(壁・腰壁/カウンター・塀/フェンス)
   for (const room of state.rooms) drawRoomDoors(room);
   // 外開きの開き戸とU字階段の矢印は、部屋のクリップの外から描く必要がある
   // (外開きは隣室側へ、U字の矢印は部屋の凹みを通ることがあるため)。
@@ -1518,6 +1536,8 @@ function render() {
     drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom);
   }
 
+  // なぞっている途中の線
+  if (!isExportRender && 線を引く) 線を描く一本({ ...線を引く, kind: 線の種類 });
   // 描きかけの点線と点。まだ部屋になっていないので書き出しには入れない
   if (!isExportRender && drawingPoints.length > 0) {
     dctx.beginPath();
@@ -2013,6 +2033,14 @@ function 室名が避けるもの(room) {
     if (枠) 設備.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ix, iy]) => 枠.点(ix * 枠.hw, iy * 枠.hd)));
   }
   置き場の種類.forEach((t) => { const q = 置き場の四角(room, t.key); if (q) 設備.push(q.点); });   // 洗・冷の印
+  (room.lines || []).forEach((l) => {   // 部屋の中の線(壁・腰壁など)。線の太さ＋少しの帯
+    if (!線か(l)) return;
+    const a = gridToScreen(l.a.gx, l.a.gy), b = gridToScreen(l.b.gx, l.b.gy);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (!(len > 0.5)) return;
+    const h = 線の太さ(l.kind) / 2 + 2, nx = -(b.y - a.y) / len * h, ny = (b.x - a.x) / len * h;
+    設備.push([{ x: a.x + nx, y: a.y + ny }, { x: b.x + nx, y: b.y + ny }, { x: b.x - nx, y: b.y - ny }, { x: a.x - nx, y: a.y - ny }]);
+  });
   if (room.showDims) {   // 寸法線(線と数字の帯)
     const d = 寸法線の位置(room), b = 10;
     弧.push([{ x: d.縦の段, y: d.横の段 - b }, { x: d.maxX, y: d.横の段 - b }, { x: d.maxX, y: d.横の段 + b }, { x: d.縦の段, y: d.横の段 + b }]);
@@ -2146,7 +2174,7 @@ const 室名の位置の控え = new WeakMap();
 function 室名の自動の位置(room) {
   if (room.typeKey === "kaidan") return 階段の室名の位置(room);
   const 倍率の段 = Math.round(Math.log(view.scale) / Math.log(1.05));
-  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge, room.showDims,
+  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge, room.showDims, room.lines,
     room.fixturePos, room.fixtureSize, room.fixtureRotation, roomHasFixture(room), 倍率の段, isExportRender]);
   let 控え = 室名の位置の控え.get(room);
   if (!控え || 控え.key !== key) {
@@ -3222,6 +3250,166 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed, �
   drawStairArrowPath(reversed ? [B, bend, A] : [A, bend, B]);
 }
 
+// ---- 線(壁・腰壁/カウンター・塀/フェンス) -------------------------------------------
+// ★2026-09-28 白井さん「壁とか自由に…書けたりすると嬉しい」(部屋の中の仕切り・塀やフェンス)。
+//   道具「線」で、なぞった所に線を引く。部屋として囲まない壁・腰壁・カウンター・塀を描ける。
+//   ★線は部屋に持たせる(room.lines = [{ a, b, kind }]、図面の座標)。階に持たせると古い版で保存したときに消える。
+//   線の真ん中が入っている部屋、どこにも入っていなければいちばん近い部屋。部屋を消すと一緒に消える。
+const 線の種類一覧 = [
+  { key: "wall", 名: "壁", 説明: "部屋の壁と同じ太さ" },
+  { key: "low", 名: "腰壁・カウンター", 説明: "細い長方形" },
+  { key: "fence", 名: "塀・フェンス", 説明: "線に短い刻み" },
+];
+let 線の種類 = "wall";   // 次に引く線の種類(最後に選んだもの)
+function 線か(l) {
+  return !!l && l.a && l.b && [l.a.gx, l.a.gy, l.b.gx, l.b.gy].every(Number.isFinite) && 線の種類一覧.some((k) => k.key === l.kind);
+}
+function 線の太さ(kind) {
+  const c = BASE_CELL * view.scale;
+  if (kind === "wall") return 壁の太さ();
+  if (kind === "low") return Math.max(4, c * 0.1);   // 腰壁・カウンターの厚み(約90mm)
+  return 1.6;
+}
+function 線を描く一本(l) {
+  const a = gridToScreen(l.a.gx, l.a.gy), b = gridToScreen(l.b.gx, l.b.gy);
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  if (!(len > 0.5)) return;
+  const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len, nx = -uy, ny = ux;
+  const 色 = 壁の色();
+  dctx.save();
+  if (l.kind === "wall") {
+    dctx.strokeStyle = 色; dctx.lineWidth = 線の太さ("wall"); dctx.lineCap = "square";
+    dctx.beginPath(); dctx.moveTo(a.x, a.y); dctx.lineTo(b.x, b.y); dctx.stroke();
+  } else if (l.kind === "low") {
+    const h = 線の太さ("low") / 2;
+    dctx.beginPath();
+    dctx.moveTo(a.x + nx * h, a.y + ny * h); dctx.lineTo(b.x + nx * h, b.y + ny * h);
+    dctx.lineTo(b.x - nx * h, b.y - ny * h); dctx.lineTo(a.x - nx * h, a.y - ny * h); dctx.closePath();
+    dctx.fillStyle = "#ffffff"; dctx.fill();
+    dctx.strokeStyle = 色; dctx.lineWidth = 1.2; dctx.stroke();
+  } else {
+    dctx.strokeStyle = 色; dctx.lineWidth = 1.6; dctx.lineCap = "butt";
+    dctx.beginPath(); dctx.moveTo(a.x, a.y); dctx.lineTo(b.x, b.y);
+    const 間 = BASE_CELL * view.scale * 0.4, 刻み = Math.max(3, BASE_CELL * view.scale * 0.07);
+    for (let t = 間 / 2; t < len; t += 間) {
+      const x = a.x + ux * t, y = a.y + uy * t;
+      dctx.moveTo(x + nx * 刻み, y + ny * 刻み); dctx.lineTo(x - nx * 刻み, y - ny * 刻み);
+    }
+    dctx.stroke();
+  }
+  dctx.restore();
+}
+function 線を描く(room) {
+  (room.lines || []).forEach((l) => { if (線か(l)) 線を描く一本(l); });
+  // 道具「線」のときは、端をつかめる印(書き出しには出さない)
+  if (!isExportRender && currentTool === "line") {
+    (room.lines || []).forEach((l) => {
+      if (!線か(l)) return;
+      [l.a, l.b].forEach((q) => {
+        const p = gridToScreen(q.gx, q.gy);
+        dctx.beginPath(); dctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+        dctx.fillStyle = "#ffffff"; dctx.fill(); dctx.lineWidth = 1.8; dctx.strokeStyle = "#2f6fed"; dctx.stroke();
+      });
+    });
+  }
+}
+// 押した所にある線 { room, i, 端: "a"|"b"|null(線の途中) } か null
+function 線に当たるか(sx, sy) {
+  let best = null;
+  state.rooms.forEach((room) => (room.lines || []).forEach((l, i) => {
+    if (!線か(l)) return;
+    const a = gridToScreen(l.a.gx, l.a.gy), b = gridToScreen(l.b.gx, l.b.gy);
+    const da = Math.hypot(sx - a.x, sy - a.y), db = Math.hypot(sx - b.x, sy - b.y);
+    const d = distPointToSegment(sx, sy, a.x, a.y, b.x, b.y);
+    const 端 = da <= 12 && da <= db ? "a" : db <= 12 ? "b" : null;
+    const 距離 = 端 ? Math.min(da, db) : d;
+    if ((端 || d <= 10) && (!best || 距離 < best.距離)) best = { room, i, 端, 距離 };
+  }));
+  return best;
+}
+// 線を持たせる部屋：線の真ん中が入っている部屋(バルコニー・吹抜より普通の部屋)、無ければいちばん近い部屋
+function 線を持たせる部屋(a, b) {
+  const m = { gx: (a.gx + b.gx) / 2, gy: (a.gy + b.gy) / 2 };
+  const 入っている = state.rooms.filter((r) => isPointInPolygonGrid(m.gx, m.gy, r.points));
+  if (入っている.length) return 入っている.find((r) => !外の部屋か(r) && !吹抜か(r)) || 入っている[0];
+  let best = null;
+  state.rooms.forEach((r) => r.points.forEach((p, i) => {
+    const q = r.points[(i + 1) % r.points.length];
+    const d = distPointToSegment(m.gx, m.gy, p.gx, p.gy, q.gx, q.gy);
+    if (!best || d < best.d) best = { r, d };
+  }));
+  return best ? best.r : null;
+}
+// なぞっている途中の線の先。横・縦に近ければまっすぐにそろえる(斜めの壁も引ける)
+function 線の先(a, sx, sy) {
+  const g = snapToExistingVertex(screenToGridSnapped(sx, sy));
+  const dx = g.gx - a.gx, dy = g.gy - a.gy;
+  if (Math.abs(dy) <= Math.abs(dx) * 0.2) return { gx: g.gx, gy: a.gy };
+  if (Math.abs(dx) <= Math.abs(dy) * 0.2) return { gx: a.gx, gy: g.gy };
+  return g;
+}
+let 線を引く = null;     // { a, b } なぞっている途中
+let 線ドラッグ = null;   // { room, i, 端, 始めの画面, 始めの線, 動き出した, 始めのJSON, 積んだ }
+let 線の画面の線 = null; // 画面で開いている線 { room, i }
+let 線の画面で積んだ = false;
+function 線の画面を開く(room, i) {
+  線の画面の線 = { room, i };
+  線の画面で積んだ = false;
+  線の種類のボタンを合わせる();
+  showModal("lineModal");
+}
+function 線の種類のボタンを合わせる() {
+  const l = 線の画面の線 && 線の画面の線.room.lines[線の画面の線.i];
+  document.querySelectorAll("#lineKindGrid .room-type-btn").forEach((btn) => btn.classList.toggle("selected", !!l && btn.dataset.lineKind === l.kind));
+}
+function 線の種類の絵(key) {
+  const c = `viewBox="0 0 60 34" width="60" height="34"`;
+  if (key === "wall") return `<svg ${c}><path d="M6 17 L54 17" stroke="#1c2733" stroke-width="4"/></svg>`;
+  if (key === "low") return `<svg ${c}><rect x="6" y="13" width="48" height="8" fill="#fff" stroke="#1c2733" stroke-width="1.4"/></svg>`;
+  return `<svg ${c}><path d="M6 17 L54 17 M12 12 L12 22 M24 12 L24 22 M36 12 L36 22 M48 12 L48 22" stroke="#1c2733" stroke-width="1.6"/></svg>`;
+}
+線の種類一覧.forEach((k) => {
+  const btn = document.createElement("button");
+  btn.className = "room-type-btn";
+  btn.dataset.lineKind = k.key;
+  btn.innerHTML = `<span class="door-preview">${線の種類の絵(k.key)}</span>${k.名}`;
+  btn.addEventListener("click", () => {
+    const t = 線の画面の線;
+    if (!t || !t.room.lines || !t.room.lines[t.i]) return;
+    if (!線の画面で積んだ) { snapshot(); 線の画面で積んだ = true; }
+    t.room.lines[t.i].kind = k.key;
+    線の種類 = k.key;   // 次に引く線もこの種類
+    線の種類のボタンを合わせる();
+    render(); autoSave();
+  });
+  $("lineKindGrid").appendChild(btn);
+});
+$("btnCloseLine").addEventListener("click", () => { hideModal("lineModal"); 線の画面の線 = null; });
+$("btnDeleteLine").addEventListener("click", () => {
+  const t = 線の画面の線;
+  hideModal("lineModal"); 線の画面の線 = null;
+  if (!t || !t.room.lines || !t.room.lines[t.i]) return;
+  if (!線の画面で積んだ) snapshot();
+  t.room.lines.splice(t.i, 1);
+  if (!t.room.lines.length) delete t.room.lines;
+  render(); autoSave();
+  showHint("線を消しました（戻すで元に戻せます）");
+});
+// 道具「線」で押したとき(handleSingleTouchStart から)
+function 線の道具で押した(sx, sy) {
+  const hit = 線に当たるか(sx, sy);
+  if (hit) {
+    const l = hit.room.lines[hit.i];
+    線ドラッグ = { room: hit.room, i: hit.i, 端: hit.端, 始めの画面: { x: sx, y: sy }, 始めの線: JSON.parse(JSON.stringify(l)),
+      動き出した: false, 始めのJSON: JSON.stringify(state.rooms), 積んだ: false };
+    return;
+  }
+  if (!state.rooms.length) { showHint("線は部屋に付けて持つので、先に部屋を1つ描いてください"); return; }
+  const a = snapToExistingVertex(screenToGridSnapped(sx, sy));
+  線を引く = { a, b: { ...a } };
+  render();
+}
+
 // ---- 角を消す・足す ------------------------------------------------------------
 // ★2026-09-28 白井さん「壁とか自由に消せたり、書けたりすると嬉しい」(描き間違いを直したい)。
 //   角をタップ(動かさずに離す) → 「この角を消す」。両どなりの壁が1本になる。
@@ -4244,6 +4432,8 @@ function startPinch() {
   // 室名をつかんだだけで2本目の指が来たら、つかんだのは無しにする(離したときに「タップ」と見て編集メニューが開くため)
   if (室名ドラッグ && !室名ドラッグ.動き出した) 室名ドラッグ = null;
   角を足すドラッグ = null;
+  線を引く = null;
+  if (線ドラッグ && !線ドラッグ.動き出した) 線ドラッグ = null;
   if (置き場ドラッグ && !置き場ドラッグ.動き出した) 置き場ドラッグ = null;
   if (外の文字ドラッグ && !外の文字ドラッグ.動き出した) 外の文字ドラッグ = null;
   const pts = [...pointers.values()];
@@ -4407,6 +4597,7 @@ function tryRoomSelectionTap(sx, sy) {
 }
 
 function handleSingleTouchStart(sx, sy) {
+  if (currentTool === "line") { 線の道具で押した(sx, sy); return; }
   if (currentTool === "door") {
     const existing = hitTestExistingDoor(sx, sy);
     if (existing) {
@@ -4489,6 +4680,38 @@ drawCanvas.addEventListener("pointermove", (e) => {
     view.offX = midLocal.x - worldAtStart.x * newScale;
     view.offY = midLocal.y - worldAtStart.y * newScale;
     drawGrid(); render();
+    return;
+  }
+
+  if (線を引く && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    線を引く.b = 線の先(線を引く.a, e.clientX - rect.left, e.clientY - rect.top);
+    render();
+    return;
+  }
+  if (線ドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 線ドラッグ;
+    if (!d.動き出した) {
+      if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 6) return;
+      d.動き出した = true;
+    }
+    const l = d.room.lines && d.room.lines[d.i];
+    if (!l) return;
+    if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+    if (d.端) {
+      // 端を動かす(反対の端を起点に、横・縦へそろえる)
+      const 他 = d.端 === "a" ? l.b : l.a;
+      l[d.端] = 線の先(他, sx, sy);
+    } else {
+      // 線ごと動かす(細かさに合わせて吸い付く)
+      const 今 = screenToGridRaw(sx, sy), 始め = screenToGridRaw(d.始めの画面.x, d.始めの画面.y);
+      const ddx = snapCoord(今.gx - 始め.gx), ddy = snapCoord(今.gy - 始め.gy);
+      l.a = { gx: 刻みに戻す(d.始めの線.a.gx + ddx), gy: 刻みに戻す(d.始めの線.a.gy + ddy) };
+      l.b = { gx: 刻みに戻す(d.始めの線.b.gx + ddx), gy: 刻みに戻す(d.始めの線.b.gy + ddy) };
+    }
+    render();
     return;
   }
 
@@ -4775,6 +4998,27 @@ function finalizeActiveDrags() {
     壁ドラッグ = null;
     render();
     if (d.積んだ) { autoSave(); 壁を動かしたあとの知らせ(d, true); }
+    return true;
+  }
+  if (線を引く) {
+    const t = 線を引く;
+    線を引く = null;
+    const 長さ = Math.hypot(t.b.gx - t.a.gx, t.b.gy - t.a.gy);
+    if (長さ < 0.2) { render(); showHint("なぞると線が引けます。線をタップすると種類を変える・消すができます"); return true; }
+    const room = 線を持たせる部屋(t.a, t.b);
+    if (!room) { render(); return true; }
+    snapshot();
+    room.lines = [...(room.lines || []).filter(線か), { a: t.a, b: t.b, kind: 線の種類 }];
+    render(); autoSave();
+    showHint(`${線の種類一覧.find((k) => k.key === 線の種類).名}を引きました。線をタップすると種類を変える・消すができます`);
+    return true;
+  }
+  if (線ドラッグ) {
+    const d = 線ドラッグ;
+    線ドラッグ = null;
+    if (!d.動き出した) { 線の画面を開く(d.room, d.i); return true; }
+    render();
+    if (d.積んだ) autoSave();
     return true;
   }
   if (角を足すドラッグ) {   // ＋を押して動かさずに離した
@@ -5476,6 +5720,11 @@ function 選んだ部屋を動かす(dx, dy, 大きく) {
   if (room.fixturePos) {
     room.fixturePos = { gx: 刻みに戻す(room.fixturePos.gx + dx * 歩幅), gy: 刻みに戻す(room.fixturePos.gy + dy * 歩幅) };
   }
+  // 線も一緒に
+  (room.lines || []).forEach((l) => {
+    if (!線か(l)) return;
+    [l.a, l.b].forEach((q) => { q.gx = 刻みに戻す(q.gx + dx * 歩幅); q.gy = 刻みに戻す(q.gy + dy * 歩幅); });
+  });
   // 建物の外の文字も一緒に
   (room.notes || []).forEach((n) => {
     if (Number.isFinite(n.gx) && Number.isFinite(n.gy)) { n.gx = 刻みに戻す(n.gx + dx * 歩幅); n.gy = 刻みに戻す(n.gy + dy * 歩幅); }
@@ -6407,9 +6656,10 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; 角を足すドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; 角を足すドラッグ = null; 線を引く = null; 線ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
+    if (currentTool === "line") showHint("なぞった所に線が引けます(壁・腰壁/カウンター・塀/フェンス)。線をタップすると種類を変える・消す、ドラッグで動かす、端の丸で伸び縮みできます", true);
     render();
   });
 });
@@ -6540,6 +6790,12 @@ function buildExportCanvas(scale, transparent) {
   state.rooms.forEach((room) => room.points.forEach((p) => {
     minGx = Math.min(minGx, p.gx); maxGx = Math.max(maxGx, p.gx);
     minGy = Math.min(minGy, p.gy); maxGy = Math.max(maxGy, p.gy);
+  }));
+  // 線(塀・フェンスは建物の外にあることが多い)
+  state.rooms.forEach((room) => (room.lines || []).forEach((l) => {
+    if (!線か(l)) return;
+    minGx = Math.min(minGx, l.a.gx, l.b.gx); maxGx = Math.max(maxGx, l.a.gx, l.b.gx);
+    minGy = Math.min(minGy, l.a.gy, l.b.gy); maxGy = Math.max(maxGy, l.a.gy, l.b.gy);
   }));
   // 建物の外の文字も入るように(文字の幅はおおよそ 1字 0.35マス)
   state.rooms.forEach((room) => (room.notes || []).forEach((n) => {
@@ -6763,6 +7019,9 @@ function ボタンの名前を合わせる() {
   if (!n) return;
   const 幅 = tb.clientWidth || document.documentElement.clientWidth;
   tb.classList.toggle("narrow", (幅 - 16 - (n - 1) * 6) / n < 72);
+  const 細い幅 = (幅 - 8 - (n - 1) * 3) / n;   // narrow のときの1つの幅(左右の余白4・間3)
+  tb.classList.toggle("xs", 細い幅 < 42);
+  tb.classList.toggle("xxs", 細い幅 < 36);
 }
 window.addEventListener("resize", ボタンの名前を合わせる);
 // ログイン画面から切り替わって帯が出たとき・画面を回したときにも測り直す
