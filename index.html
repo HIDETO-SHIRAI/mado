@@ -540,6 +540,10 @@
         <button id="doorPosPlus">▶</button>
       </div>
     </div>
+    <div class="flip-row row-hidden" id="doorWholeRow">
+      <label>壁1本をまるごと消す</label>
+      <button class="iconbtn" id="btnDoorWhole">壁ぜんぶ</button>
+    </div>
     <div class="flip-row row-hidden" id="doorFlipRow">
       <label>開く向き・引き込む向きを反転</label>
       <button class="iconbtn" id="btnFlipDoor">⇄</button>
@@ -1141,6 +1145,10 @@ const DOOR_TYPES = [
   // ★2026-09-28 折れ戸。レインズの図面では収納・クローゼットの戸でいちばん多い(壁に三角の印)。
   //   古い版はこの種類を知らないので、窓として描く(開口は開いたまま・壊れはしない)。
   { key: "fold", label: "折れ戸", group: "door", defaultWidthMasu: 0.9 },
+  // ★2026-09-28 開口(壁なし)。壁を切るだけで何も描かない。隣の部屋とつなげる・外周の一部を開ける(ポーチ・駐車場など)。
+  //   幅は壁いっぱいまで(「壁ぜんぶ」で1本まるごと消える)。白井さん「壁とか自由に消せたり…すると嬉しい」。
+  //   古い版はこの種類を知らないので、窓として描く(壁は開いたまま)。
+  { key: "opening", label: "開口（壁なし）", group: "door", defaultWidthMasu: 0.9 },
   { key: "window_slide", label: "引き違い窓", group: "window", defaultWidthMasu: 1.85 },
   { key: "window_fix", label: "FIX窓", group: "window", defaultWidthMasu: 0.9 },
   // ★2026-09-28 出窓。壁の外へ台形に張り出す(レインズの図面 #36・#39)。古い版は FIX窓として描く
@@ -3661,8 +3669,9 @@ function doorSegment(room, door) {
   //   スマホで全体を表示すると常にこの倍率域なので、見た目と成果物がずれる。
   //   指でつまむ大きさは当たり判定の話なので、描画からは外した。
   const w0 = (Number.isFinite(door.widthMasu) && door.widthMasu > 0) ? door.widthMasu : 0.85;
-  const widthMasu = Math.min(w0, (edgeLen / (BASE_CELL * view.scale)) * 0.9);
-  const doorWidth = Math.min(widthMasu * BASE_CELL * view.scale, edgeLen * 0.96);
+  const 壁なし = door.type === "opening";   // 開口は壁いっぱいまで開けられる(ほかの建具は枠のぶん残す)
+  const widthMasu = Math.min(w0, (edgeLen / (BASE_CELL * view.scale)) * (壁なし ? 1 : 0.9));
+  const doorWidth = Math.min(widthMasu * BASE_CELL * view.scale, edgeLen * (壁なし ? 1 : 0.96));
   const half = doorWidth / 2;
   // 中心が端に寄りすぎると開口が角をまたいでしまうので、辺の中に収める
   const r = Number.isFinite(door.ratio) ? door.ratio : 0.5;
@@ -3809,6 +3818,14 @@ function drawDoorMark(room, door) {
     }
     dctx.stroke();
     drawOpeningJamb(a, b, nx, ny, 4.5 * zs, zs);
+  } else if (type === "opening") {
+    // 開口(壁なし)：壁が切れているだけ。画面では、どこが開口か分かって押せるよう薄い点線を引く(書き出しには出さない)
+    if (!isExportRender) {
+      dctx.strokeStyle = "rgba(47,111,237,0.45)"; dctx.lineWidth = 1.2;
+      dctx.setLineDash([4, 4]);
+      dctx.beginPath(); dctx.moveTo(a.x, a.y); dctx.lineTo(b.x, b.y); dctx.stroke();
+      dctx.setLineDash([]);
+    }
   } else if (type === "window_bay") {
     // 出窓: 開口から壁の外へ台形に張り出す(奥行き 0.35マス ≒ 320mm、横は奥行きの0.8倍ずつ絞る)。
     //   外側の辺の少し内側にガラスの細い線、室内側の面に窓台の縁の線。
@@ -5956,6 +5973,7 @@ function miniDoorPreviewSVG(key) {
   // 変え、2枚の障子が互い違いに重なって見える2枚の矩形パネルで表現する
   // (アイコンが小さいと本数の違いだけでは伝わりにくいと再調査で指摘されたため)。
   if (key === "slide_double") return `<svg ${common}><rect x="3" y="5" width="38" height="11" rx="2" fill="none" stroke="#1c2733" stroke-width="1.4"/><rect x="19" y="18" width="38" height="11" rx="2" fill="none" stroke="#1c2733" stroke-width="1.4"/></svg>`;
+  if (key === "opening") return `<svg ${common}><path d="M4 22 L16 22 M44 22 L56 22" stroke="#1c2733" stroke-width="3.5"/><path d="M16 22 L44 22" stroke="#2f6fed" stroke-width="1.3" stroke-dasharray="3,3"/><path d="M24 12 L30 6 L36 12 M24 32 L30 26 L36 32" fill="none" stroke="#9aa1ab" stroke-width="1.3" transform="translate(0,-4)"/></svg>`;
   if (key === "fold") return `<svg ${common}><path d="M6 30 L54 30" stroke="#c7ced6" stroke-width="2"/><path d="M6 30 L18 12 L30 30 L42 12 L54 30" stroke="#1c2733" stroke-width="1.5" fill="none" stroke-linejoin="miter"/></svg>`;
   // 窓は盤面と同じく水色の帯。引き違い窓は真ん中に仕切り、FIX窓は仕切りなし
   const 窓の帯 = `<rect x="6" y="10" width="48" height="14" fill="${窓の水色}" stroke="#1c2733" stroke-width="1.3"/>`;
@@ -6021,6 +6039,7 @@ function updateDoorTypeSelection(typeKey) {
 // 既存建具を編集中の場合は、確定前でもその場でプレビュー反映する(確定/やめるは
 // openDoorEditModalで保存したoriginalとの差分として扱う)
 function updateDoorModalUI() {
+  $("doorWholeRow").classList.toggle("row-hidden", pendingDoor.type !== "opening");
   updateFlipRowVisibility(pendingDoor.type);
   updateSwingRowVisibility(pendingDoor.type);
   updateDoorTypeSelection(pendingDoor.type);
@@ -6093,6 +6112,13 @@ $("btnToggleSwingOut").addEventListener("click", () => {
   pendingDoor.swingOut = !pendingDoor.swingOut;
   updateDoorModalUI();
 });
+// 開口を壁1本いっぱいに(幅 = 壁の長さ、真ん中)
+$("btnDoorWhole").addEventListener("click", () => {
+  const isExisting = pendingDoor.existingIndex >= 0;
+  pendingDoor.widthMasu = pendingDoorEdgeLenMasu();
+  if (isExisting) pendingDoor.room.doors[pendingDoor.existingIndex].ratio = 0.5; else pendingDoor.ratio = 0.5;
+  updateDoorModalUI();
+});
 $("doorWidthMinus").addEventListener("click", () => stepDoorWidth(-0.1));
 $("doorWidthPlus").addEventListener("click", () => stepDoorWidth(0.1));
 // 幅の調整単位は0.1マス(≒9cm)刻み。壁からはみ出さないよう、その壁の長さの
@@ -6104,7 +6130,7 @@ function pendingDoorEdgeLenMasu() {
   return Math.hypot(p2.gx - p1.gx, p2.gy - p1.gy);
 }
 function stepDoorWidth(delta) {
-  const maxW = Math.max(0.3, pendingDoorEdgeLenMasu() * 0.9);
+  const maxW = Math.max(0.3, pendingDoorEdgeLenMasu() * (pendingDoor.type === "opening" ? 1 : 0.9));
   pendingDoor.widthMasu = Math.max(0.3, Math.min(maxW, Math.round((pendingDoor.widthMasu + delta) * 10) / 10));
   updateDoorModalUI();
 }
