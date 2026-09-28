@@ -1051,7 +1051,9 @@ const ROOM_TYPES = [
   // ベランダ・柱等のデッドスペースは、専有面積に含めない不動産実務の慣習に
   // 合わせ、合計畳数・部屋数のどちらにも数えない(excludeFromTotal)。見た目は
   // 押入等と同じ斜線ハッチングにし、「主要な居室ではない」ことを示す。
-  { key: "veranda", label: "ベランダ", em: "🌤️", color: "#eef2f5", stroke: "#9fb3c2", excludeFromTotal: true, hideTatami: true },
+  // ★2026-09-28 名前を「ベランダ」→「バルコニー」(レインズの図面は拡大した9枚すべて「バルコニー」)。
+  //   建物の外にある場所として描く(外の部屋か)。塗らない・細い線・手すりの二重線・外壁の輪から外す。
+  { key: "veranda", label: "バルコニー", em: "🌤️", color: "#ffffff", stroke: "#9fb3c2", excludeFromTotal: true, hideTatami: true },
   { key: "deadspace", label: "デッドスペース", em: "⬛", color: "#dcdee1", stroke: "#7a828a", excludeFromTotal: true, noLabel: true },
   { key: "sonota", label: "その他", em: "▫️", color: "#f0f0f0", stroke: "#b0b0b0" },
 ];
@@ -1640,7 +1642,50 @@ function strokeOutlineWithOpenings(room, openings) {
 function isOnBuildingEdge(g) {
   const d = BASE_CELL * view.scale * 0.25;
   const x = g.center.x - g.nx * d, y = g.center.y - g.ny * d;   // nx,nyは室内向き
-  return !state.rooms.some((room) => pointInRoomScreen(room, x, y));
+  // バルコニーは建物の外。バルコニーに面した窓・戸は外壁の建具
+  return !state.rooms.some((room) => !外の部屋か(room) && pointInRoomScreen(room, x, y));
+}
+// 建物の外にある場所(バルコニー)。外壁の輪に入れず、壁ではなく細い線と手すりで描く。
+// ★2026-09-28 保存画像でバルコニーまで太い外壁の輪で囲まれ、部屋に見えていた(レインズの図面と比べて見つけた)。
+function 外の部屋か(room) { return room.typeKey === "veranda"; }
+// バルコニーの手すり：内側にもう1本の細い線(二重線)。建物に接している辺には引かない(そこは建物の外壁)
+function 手すりを描く(room) {
+  const 生 = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const pts = 生.filter((q, i) => { const r = 生[(i + 1) % 生.length]; return Math.hypot(r.x - q.x, r.y - q.y) >= 0.5; });
+  const n = pts.length;
+  if (n < 3) return;
+  const sgn = roomWindingSign(room);
+  const d = BASE_CELL * view.scale * 0.12;
+  const 辺 = pts.map((A, i) => {
+    const B = pts[(i + 1) % n];
+    const len = Math.hypot(B.x - A.x, B.y - A.y);
+    const ux = (B.x - A.x) / len, uy = (B.y - A.y) / len;
+    const nx = -uy * sgn, ny = ux * sgn;                               // 室内向き
+    const m = { x: (A.x + B.x) / 2 - nx * 3, y: (A.y + B.y) / 2 - ny * 3 };   // 辺のすぐ外
+    const 接する = state.rooms.some((r) => r !== room && !外の部屋か(r) && pointInRoomScreen(r, m.x, m.y));
+    return { A, ux, uy, nx, ny, off: 接する ? 0 : d, 接する };
+  });
+  // 内側へずらした辺どうしの交点 = 手すりの角
+  const 角 = 辺.map((e, i) => {
+    const f = 辺[(i - 1 + n) % n];
+    const P = { x: e.A.x + e.nx * e.off, y: e.A.y + e.ny * e.off };
+    const Q = { x: f.A.x + f.nx * f.off, y: f.A.y + f.ny * f.off };
+    const den = f.ux * e.uy - f.uy * e.ux;
+    if (Math.abs(den) < 1e-9) return P;                                // 一直線に続く辺
+    const t = ((P.x - Q.x) * e.uy - (P.y - Q.y) * e.ux) / den;
+    return { x: Q.x + f.ux * t, y: Q.y + f.uy * t };
+  });
+  dctx.save();
+  dctx.lineWidth = 1.2;
+  dctx.strokeStyle = colorScheme === "simple" ? SIMPLE_STROKE : WALL_COLOR;
+  dctx.beginPath();
+  辺.forEach((e, i) => {
+    if (e.接する) return;
+    const a = 角[i], b = 角[(i + 1) % n];
+    dctx.moveTo(a.x, a.y); dctx.lineTo(b.x, b.y);
+  });
+  dctx.stroke();
+  dctx.restore();
 }
 // 部屋の中で、室名を置ける「いちばん広いところ」を探す。
 // 水平に何本か走査して、部屋の内側にある区間のうち最も長いものの中心を返す。
@@ -1972,9 +2017,12 @@ function 室名の枠を描く(room) {
 // (1) 床の色。開口部にも床は続いているので、塗りは切らない
 function drawRoomFill(room) {
   const type = roomType(room);
-  roomPath(room);
-  dctx.fillStyle = colorScheme === "simple" ? SIMPLE_FILL : type.color;
-  dctx.fill();
+  // バルコニーは塗らない(紙の白のまま)。★塗ると、保存画像で建物の外壁の輪(バルコニー側へ出る太線)を隠す
+  if (!外の部屋か(room)) {
+    roomPath(room);
+    dctx.fillStyle = colorScheme === "simple" ? SIMPLE_FILL : type.color;
+    dctx.fill();
+  }
   if (colorScheme === "simple") {
     if (HATCH_ROOM_KEYS.includes(room.typeKey)) drawHatchFill(room);
   } else if (room.typeKey === "genkan") drawTileFill(room);
@@ -1986,13 +2034,15 @@ function drawRoomWalls(room, openings) {
   // 選択中の部屋は枠を太くして強調する。これも「触るための印」なので書き出しでは外す
   // (ハンドルだけ消しても、この太枠が残って1部屋だけ黒縁になる。実際に画像で確認した)。
   const isEditing = !isExportRender && editingRoom === room;
+  const 外 = 外の部屋か(room);
   dctx.save();
-  dctx.lineWidth = isEditing ? 5 : 3;
+  dctx.lineWidth = 外 ? (isEditing ? 3 : 1.2) : (isEditing ? 5 : 3);   // バルコニーは壁ではなく細い線
   dctx.strokeStyle = colorScheme === "simple" ? SIMPLE_STROKE : WALL_COLOR;
   dctx.lineCap = "butt";     // 丸めると開口の中まで線が伸びて、せっかくの切れ目が埋まる
   dctx.lineJoin = "miter";
   strokeOutlineWithOpenings(room, openings);
   dctx.restore();
+  if (外) 手すりを描く(room);
 }
 
 // (3) 建具の記号
@@ -5524,6 +5574,7 @@ function drawBuildingOutline(octx, w, h, scale, pad) {
   const offCtx = off.getContext("2d");
   offCtx.fillStyle = "#1c2733";
   state.rooms.forEach((room) => {
+    if (外の部屋か(room)) return;   // バルコニーは建物の外(輪で囲まない)
     offCtx.beginPath();
     room.points.forEach((p, i) => {
       const s = gridToScreen(p.gx, p.gy);
