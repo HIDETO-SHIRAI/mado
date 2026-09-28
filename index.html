@@ -1287,6 +1287,7 @@ let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッ�
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
 let 設備の大きさドラッグ = null; // 設備の枠のつまみ(角・辺)を引っ張って大きさを変えている間の状態
 let 外の文字ドラッグ = null; // 建物の外の文字をつかんでいる間(動かさずに離したら、文字を直す画面)
+let 角を足すドラッグ = null; // 辺の「＋」をつかんでいる間(動き出したら角を足して、角のドラッグに変わる)
 let 置き場ドラッグ = null; // 選んだ部屋の洗・冷の印をつかんでいる間(動かさずに離したら、ただのタップ)
 let 室名ドラッグ = null; // 選んだ部屋の室名の文字をつかんでいる間の状態(動かさずに離したら、ただのタップ)
 let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
@@ -1513,6 +1514,7 @@ function render() {
     //   つまみのほうが掴める。当たり判定の順番と揃える)
     if (マウスで触っているか()) 壁の長さを描く(editingRoom);
     室名の枠を描く(editingRoom);
+    角を足す印を描く(editingRoom);
     drawVertexHandles(editingRoom); drawFixtureHandle(editingRoom);
   }
 
@@ -3220,6 +3222,105 @@ function drawBentStairSymbol(pts, minX, maxX, minY, maxY, stepCount, reversed, �
   drawStairArrowPath(reversed ? [B, bend, A] : [A, bend, B]);
 }
 
+// ---- 角を消す・足す ------------------------------------------------------------
+// ★2026-09-28 白井さん「壁とか自由に消せたり、書けたりすると嬉しい」(描き間違いを直したい)。
+//   角をタップ(動かさずに離す) → 「この角を消す」。両どなりの壁が1本になる。
+//   辺の真ん中の「＋」を引く → そこに角が増え、そのまま動かせる。
+//   建具は壁の番号と割合で持っているので、角を消す・足すときに付け直す(場所はそのまま)。
+function 角を消す(room, i) {
+  const 旧 = room.points.map((p) => ({ ...p })), n = 旧.length;
+  if (n <= 3) return false;
+  const 前の辺 = (i - 1 + n) % n;
+  const 戸の場所 = (room.doors || []).map((d) => {
+    const a = 旧[d.edge], b = 旧[(d.edge + 1) % n];
+    const t = Number.isFinite(d.ratio) ? d.ratio : 0.5;
+    return { gx: a.gx + (b.gx - a.gx) * t, gy: a.gy + (b.gy - a.gy) * t, 合わさる: d.edge === i || d.edge === 前の辺 };
+  });
+  room.points.splice(i, 1);
+  const pts = room.points, m = pts.length;
+  const 合わさった辺 = (i - 1 + m) % m;   // pts[i-1] → pts[i](元の i+1)
+  room.doors = (room.doors || []).map((d, k) => {
+    const c = 戸の場所[k];
+    let best = null;
+    for (let e = 0; e < m; e++) {
+      if (c.合わさる && e !== 合わさった辺) continue;   // 消した角の両どなりの戸は、1本になった壁へ
+      const a = pts[e], b = pts[(e + 1) % m];
+      const len2 = (b.gx - a.gx) ** 2 + (b.gy - a.gy) ** 2;
+      if (!(len2 > 0)) continue;
+      const t = Math.max(0, Math.min(1, ((c.gx - a.gx) * (b.gx - a.gx) + (c.gy - a.gy) * (b.gy - a.gy)) / len2));
+      const dist = Math.hypot(a.gx + (b.gx - a.gx) * t - c.gx, a.gy + (b.gy - a.gy) * t - c.gy);
+      if (!best || dist < best.dist) best = { e, t, dist };
+    }
+    return best ? { ...d, edge: best.e, ratio: best.t } : d;
+  });
+  if (!room.tatamiManual) room.tatami = masuToTatami(polygonAreaMasu(room.points));
+  return true;
+}
+function 角を消すか聞く(room, i) {
+  if (room.points.length <= 3) { showHint("三角形より角を減らすことはできません"); return; }
+  openConfirm("この角を消す", "角を1つ消して、両どなりの壁を1本の壁にします（戻すで元に戻せます）", () => {
+    snapshot();
+    if (角を消す(room, i)) { render(); autoSave(); showHint("角を消しました（戻すで元に戻せます）"); }
+  });
+}
+// 辺 e の途中(先頭から割合 t の所 = ＋の所)に角を足す。足した角の番号を返す
+function 角を足す(room, e, t = 0.5) {
+  const n = room.points.length;
+  const a = room.points[e], b = room.points[(e + 1) % n];
+  const M = { gx: 刻みに戻す(a.gx + (b.gx - a.gx) * t), gy: 刻みに戻す(a.gy + (b.gy - a.gy) * t) };
+  room.points.splice(e + 1, 0, M);
+  room.doors = (room.doors || []).map((d) => {
+    if (d.edge > e) return { ...d, edge: d.edge + 1 };
+    if (d.edge < e) return d;
+    const r = Number.isFinite(d.ratio) ? d.ratio : 0.5;   // 足した角より手前は前半の壁、先は後半の壁(場所はそのまま)
+    return r < t ? { ...d, ratio: r / t } : { ...d, edge: e + 1, ratio: (r - t) / (1 - t) };
+  });
+  return e + 1;
+}
+// 「＋」の場所(画面)。短い辺(画面で 48px 未満)には出さない(角のつまみと重なって掴み分けられない)。
+// ★建具の無い所のうち、いちばん長い区間の真ん中に置く。戸は壁の真ん中にあることが多く、辺の真ん中に置いたら
+//   ＋が戸を覆い、戸をタップしても建具の画面が開かなくなった(試験で見つけた)。建具の無い区間が 30px 未満なら出さない。
+function 角を足す印(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const openings = collectOpenings();
+  const 印 = [];
+  pts.forEach((a, e) => {
+    const b = pts[(e + 1) % pts.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 48) return;
+    const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+    const 開 = gapsOnEdge(a, ux, uy, len, openings).map(([t0, t1]) => [t0 - 10, t1 + 10]);   // 戸のきわも避ける
+    let best = null, t = 12;                                                                    // 角のきわも避ける
+    for (const [g0, g1] of [...開, [len - 12, Infinity]]) {
+      if (g0 - t >= 30 && (!best || g0 - t > best[1] - best[0])) best = [t, g0];
+      t = Math.max(t, g1);
+    }
+    if (!best) return;
+    const m = (best[0] + best[1]) / 2;
+    印.push({ e, t: m / len, x: a.x + ux * m, y: a.y + uy * m });
+  });
+  return 印;
+}
+function 角を足す印に当たるか(room, sx, sy) {
+  let best = null;
+  for (const q of 角を足す印(room)) {
+    const d = Math.hypot(sx - q.x, sy - q.y);
+    if (d <= 11 && (!best || d < best.距離)) best = { e: q.e, t: q.t, 距離: d };
+  }
+  return best;
+}
+function 角を足す印を描く(room) {
+  角を足す印(room).forEach((q) => {
+    dctx.save();
+    dctx.beginPath(); dctx.arc(q.x, q.y, 7, 0, Math.PI * 2);
+    dctx.fillStyle = "#ffffff"; dctx.fill();
+    dctx.lineWidth = 1.6; dctx.strokeStyle = "#2f6fed"; dctx.stroke();
+    dctx.beginPath(); dctx.moveTo(q.x - 3.5, q.y); dctx.lineTo(q.x + 3.5, q.y); dctx.moveTo(q.x, q.y - 3.5); dctx.lineTo(q.x, q.y + 3.5);
+    dctx.lineWidth = 1.6; dctx.stroke();
+    dctx.restore();
+  });
+}
+
 // 「編集/消す」ツールで選択中の部屋の頂点にハンドル(丸印)を表示する。
 // ハンドルをドラッグすると頂点の位置を後から調整できる(vertexDrag参照)。
 function drawVertexHandles(room) {
@@ -4142,6 +4243,7 @@ function startPinch() {
   isPointerDrawing = false;
   // 室名をつかんだだけで2本目の指が来たら、つかんだのは無しにする(離したときに「タップ」と見て編集メニューが開くため)
   if (室名ドラッグ && !室名ドラッグ.動き出した) 室名ドラッグ = null;
+  角を足すドラッグ = null;
   if (置き場ドラッグ && !置き場ドラッグ.動き出した) 置き場ドラッグ = null;
   if (外の文字ドラッグ && !外の文字ドラッグ.動き出した) 外の文字ドラッグ = null;
   const pts = [...pointers.values()];
@@ -4202,8 +4304,15 @@ function tryRoomSelectionTap(sx, sy) {
     // 部屋の角と設備のつまみが両方届くときは近い方(壁いっぱいのキッチンは、枠の角が部屋の角のすぐそばに来る)
     if (hIdx !== null && !(設備 && 設備.距離 < 角の距離)) {
       snapshot();
-      vertexDrag = { room: editingRoom, index: hIdx };
+      // 動かさずに離したら「この角を消す」(元の場所と、積んだ履歴の数を覚えておく)
+      vertexDrag = { room: editingRoom, index: hIdx, 元: { ...editingRoom.points[hIdx] }, 履歴: history.length, 動いた: false };
       render();
+      return true;
+    }
+    // 辺の「＋」(設備のつまみのほうが近ければ設備)
+    const 足す = 角を足す印に当たるか(editingRoom, sx, sy);
+    if (足す && !(設備 && 設備.距離 < 足す.距離)) {
+      角を足すドラッグ = { room: editingRoom, e: 足す.e, t: 足す.t, 始めの画面: { x: sx, y: sy } };
       return true;
     }
     if (設備 && 設備.種類 === "回す") {
@@ -4276,7 +4385,7 @@ function tryRoomSelectionTap(sx, sy) {
     const 室名の案内 = 室名を出すか(room) ? "室名は点線の枠ごとドラッグで動かせます。" : "";
     showHint((roomHasFixture(room)
       ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを、枠の四角いつまみで大きさを調整できます(つまみが出ないときは拡大)。" + 室名の案内
-      : "頂点をドラッグで形を調整できます。" + 室名の案内 + "もう一度タップすると編集メニューが開きます") + キーの案内);
+      : "頂点をドラッグで形を調整、角をタップで消す、辺の＋を引くと角が増えます。" + 室名の案内 + "もう一度タップすると編集メニューが開きます") + キーの案内);
     return true;
   }
   if (editingRoom) {
@@ -4330,7 +4439,7 @@ function handleSingleTouchStart(sx, sy) {
     // ★選んだ部屋の室名(点線の枠の中)は、建具より先に掴む。狭いトイレ・洗面所では室名が戸の弧の
     //   上にあり(開き戸の当たりは弧の向きへ戸の幅だけ伸びる)、室名をつかもうとすると建具の画面が開いていた。
     //   枠の外なら建具はこれまでどおり。角・設備のつまみは室名より先(tryRoomSelectionTap の順)
-    if (existingDoor && !外の文字に当たるか(sx, sy) && !(editingRoom && (室名の枠の中か(editingRoom, sx, sy) || 置き場に当たるか(editingRoom, sx, sy)))) {
+    if (existingDoor && !外の文字に当たるか(sx, sy) && !(editingRoom && (室名の枠の中か(editingRoom, sx, sy) || 置き場に当たるか(editingRoom, sx, sy) || 角を足す印に当たるか(editingRoom, sx, sy)))) {
       openDoorEditModal(existingDoor.room, existingDoor.index);
       return;
     }
@@ -4383,10 +4492,23 @@ drawCanvas.addEventListener("pointermove", (e) => {
     return;
   }
 
+  if (角を足すドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 角を足すドラッグ;
+    if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 5) return;   // 手ぶれでは足さない
+    snapshot();
+    const i = 角を足す(d.room, d.e, d.t);
+    角を足すドラッグ = null;
+    vertexDrag = { room: d.room, index: i, 元: { ...d.room.points[i] }, 履歴: history.length, 動いた: true };
+    // このまま下の角のドラッグで、指の所へ動かす
+  }
+
   if (vertexDrag && pointers.size === 1) {
     const rect = drawCanvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
     const g = snapToExistingVertex(screenToGridSnapped(sx, sy), vertexDrag.room);
+    if (vertexDrag.元 && (g.gx !== vertexDrag.元.gx || g.gy !== vertexDrag.元.gy)) vertexDrag.動いた = true;
     vertexDrag.room.points[vertexDrag.index] = g;
     // ★動かしている間も畳数を出し直す。以前は指を離すまで変わらず、寸法合わせで
     //   「いま何畳か」を見ながら動かせなかった。手で直した畳数は触らない(離したときと同じ)。
@@ -4655,11 +4777,24 @@ function finalizeActiveDrags() {
     if (d.積んだ) { autoSave(); 壁を動かしたあとの知らせ(d, true); }
     return true;
   }
+  if (角を足すドラッグ) {   // ＋を押して動かさずに離した
+    角を足すドラッグ = null;
+    showHint("＋を引っぱると、そこに角が増えます");
+    return true;
+  }
   if (vertexDrag) {
-    const room = vertexDrag.room;
+    const d = vertexDrag;
+    const room = d.room;
+    vertexDrag = null;
+    if (d.元 && !d.動いた) {
+      // 角をタップしただけ：押したときに積んだ「戻す」は何も変わっていないので取り消し、「この角を消す」を聞く
+      if (history.length === d.履歴) { history.pop(); updateUndoRedoButtons(); }
+      render();
+      角を消すか聞く(room, d.index);
+      return true;
+    }
     // 手で直した広さは上書きしない(実測して入れた値が消えてしまうため)。
     if (!room.tatamiManual) room.tatami = masuToTatami(polygonAreaMasu(room.points));
-    vertexDrag = null;
     render(); autoSave();
     return true;
   }
@@ -5033,7 +5168,7 @@ function 壁の長さを描く(room) {
   dctx.restore();
 }
 function ほかのつまみに当たるか(room, sx, sy) {
-  return hitTestVertexHandle(room, sx, sy) !== null || 設備のつまみに当たるか(room, sx, sy) !== null;
+  return hitTestVertexHandle(room, sx, sy) !== null || 設備のつまみに当たるか(room, sx, sy) !== null || !!角を足す印に当たるか(room, sx, sy);
 }
 function 壁のつまみに当たるか(room, sx, sy) {
   for (let i = room.points.length - 1; i >= 0; i--) {
@@ -5262,6 +5397,7 @@ drawCanvas.addEventListener("pointermove", (e) => {
     else if (editingRoom && pointers.size === 0) {
       const { 角, 設備 } = 選んだ部屋のつまみ(editingRoom, sx, sy);   // 押したときと同じ決め方
       if (設備) 形 = 設備.種類 === "大きさ" ? 設備の大きさのカーソル(editingRoom, 設備.ix, 設備.iy) : (設備.種類 === "動かす" ? "move" : "grab");
+      else if (角 === null && 角を足す印に当たるか(editingRoom, sx, sy)) 形 = "crosshair";
       else if (角 === null && (置き場に当たるか(editingRoom, sx, sy) || 室名に当たるか(editingRoom, sx, sy))) 形 = "move";
     }
   }
@@ -6271,7 +6407,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; 角を足すドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
