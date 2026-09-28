@@ -478,6 +478,10 @@
       <label>設備の大きさ<br><small id="fixtureSizeText">幅 − × 奥行き − mm</small></label>
       <button class="iconbtn" id="btnFixtureReset">自動に戻す</button>
     </div>
+    <div class="field-row" id="dimsRow" style="display:none;">
+      <label>寸法線<br><small>部屋の幅と奥行きを m で</small></label>
+      <button class="iconbtn" id="btnDims">なし</button>
+    </div>
     <div class="field-row" id="notesRow" style="display:none;">
       <label>建物の外の文字<br><small>庭・道路・共用廊下など。図面でドラッグ、タップで直す</small></label>
       <button class="iconbtn" id="btnAddNote">＋ 文字を足す</button>
@@ -1994,6 +1998,11 @@ function 室名が避けるもの(room) {
     if (枠) 設備.push([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([ix, iy]) => 枠.点(ix * 枠.hw, iy * 枠.hd)));
   }
   置き場の種類.forEach((t) => { const q = 置き場の四角(room, t.key); if (q) 設備.push(q.点); });   // 洗・冷の印
+  if (room.showDims) {   // 寸法線(線と数字の帯)
+    const d = 寸法線の位置(room), b = 10;
+    弧.push([{ x: d.縦の段, y: d.横の段 - b }, { x: d.maxX, y: d.横の段 - b }, { x: d.maxX, y: d.横の段 + b }, { x: d.縦の段, y: d.横の段 + b }]);
+    弧.push([{ x: d.縦の段 - b, y: d.横の段 }, { x: d.縦の段 + 50, y: d.横の段 }, { x: d.縦の段 + 50, y: d.maxY }, { x: d.縦の段 - b, y: d.maxY }]);
+  }
   (room.doors || []).forEach((d) => {
     if (!isSwingDoor(d) || d.swingOut) return;
     const g = doorSegment(room, d);
@@ -2122,7 +2131,7 @@ const 室名の位置の控え = new WeakMap();
 function 室名の自動の位置(room) {
   if (room.typeKey === "kaidan") return 階段の室名の位置(room);
   const 倍率の段 = Math.round(Math.log(view.scale) / Math.log(1.05));
-  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge,
+  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText, room.washer, room.fridge, room.showDims,
     room.fixturePos, room.fixtureSize, room.fixtureRotation, roomHasFixture(room), 倍率の段, isExportRender]);
   let 控え = 室名の位置の控え.get(room);
   if (!控え || 控え.key !== key) {
@@ -2266,6 +2275,56 @@ function 外の文字を直す(room, i) {
     render(); autoSave();
     showHint("文字を消しました（戻すで元に戻せます）");
   });
+}
+
+// ---- 寸法線 ------------------------------------------------------------------
+// ★2026-09-28 レインズの図面には、車庫などに寸法線(矢印と「5.22m」)を入れたものがある(#3)。
+//   部屋の画面で「寸法線 あり」にすると(room.showDims)、部屋の中に幅と奥行きの矢印を描く。
+//   長さは外接する四角の幅・奥行き(1マス = 0.91m)。
+function 寸法線の位置(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const c = BASE_CELL * view.scale;
+  const 横の段 = minY + Math.min(0.3 * c, (maxY - minY) / 4), 縦の段 = minX + Math.min(0.3 * c, (maxX - minX) / 4);
+  const gxs = room.points.map((p) => p.gx), gys = room.points.map((p) => p.gy);
+  const 幅 = (Math.max(...gxs) - Math.min(...gxs)) * 0.91, 奥 = (Math.max(...gys) - Math.min(...gys)) * 0.91;
+  return { minX, maxX, minY, maxY, 横の段, 縦の段, 幅: `${幅.toFixed(2)}m`, 奥: `${奥.toFixed(2)}m` };
+}
+function 寸法線を描く(room) {
+  if (!room.showDims) return;
+  const d = 寸法線の位置(room);
+  const 矢 = 5;
+  const 矢印 = (x0, y0, x1, y1) => {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    if (!(len > 矢 * 3)) return;
+    const ux = (x1 - x0) / len, uy = (y1 - y0) / len;
+    dctx.beginPath(); dctx.moveTo(x0, y0); dctx.lineTo(x1, y1); dctx.stroke();
+    [[x0, y0, 1], [x1, y1, -1]].forEach(([x, y, k]) => {
+      dctx.beginPath();
+      dctx.moveTo(x, y);
+      dctx.lineTo(x + (ux * 矢 * 1.6 - uy * 矢 * 0.6) * k, y + (uy * 矢 * 1.6 + ux * 矢 * 0.6) * k);
+      dctx.lineTo(x + (ux * 矢 * 1.6 + uy * 矢 * 0.6) * k, y + (uy * 矢 * 1.6 - ux * 矢 * 0.6) * k);
+      dctx.closePath(); dctx.fill();
+    });
+  };
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  dctx.strokeStyle = "#39424b"; dctx.fillStyle = "#39424b"; dctx.lineWidth = 1;
+  矢印(d.縦の段 + 6, d.横の段, d.maxX - 3, d.横の段);          // 幅(上の方)
+  矢印(d.縦の段, d.横の段 + 6, d.縦の段, d.maxY - 3);          // 奥行き(左の方)
+  const size = 12 + (isExportRender ? EXPORT_LABEL_BOOST : 0);
+  dctx.font = `${size}px -apple-system, sans-serif`;
+  dctx.lineWidth = 3; dctx.strokeStyle = "rgba(255,255,255,.95)";
+  dctx.textBaseline = "middle";
+  dctx.textAlign = "center";
+  const 横の字 = (d.縦の段 + d.maxX) / 2;
+  dctx.strokeText(d.幅, 横の字, d.横の段); dctx.fillText(d.幅, 横の字, d.横の段);
+  dctx.textAlign = "left";
+  const 縦の字 = (d.横の段 + d.maxY) / 2;
+  dctx.strokeText(d.奥, d.縦の段 + 4, 縦の字); dctx.fillText(d.奥, d.縦の段 + 4, 縦の字);
+  dctx.restore();
 }
 
 // ---- 洗濯機・冷蔵庫の置き場の印 ------------------------------------------------
@@ -2445,6 +2504,7 @@ function drawRoomDecor(room) {
   }
   dctx.restore();
   置き場を描く(room);   // 洗濯機・冷蔵庫の置き場(室名より先に描く = 室名が上)
+  寸法線を描く(room);
 
   // 廊下など、室名も広さも表示する意味がない部屋種別はラベル描画自体を省略する
   if (!室名を出すか(room)) return;
@@ -5487,8 +5547,11 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   $("kitchenRow").style.display = LDKの部屋 ? "flex" : "none";
   キッチンのボタンで積んだ = false;
   if (LDKの部屋) $("btnKitchenOn").textContent = editingRoom.kitchenOn ? "あり" : "なし";
-  // 建物の外の文字(図面にある部屋を開いたときだけ)
+  // 建物の外の文字・寸法線(図面にある部屋を開いたときだけ)
   $("notesRow").style.display = isEdit && editingRoom ? "flex" : "none";
+  $("dimsRow").style.display = isEdit && editingRoom ? "flex" : "none";
+  寸法線のボタンで積んだ = false;
+  if (isEdit && editingRoom) $("btnDims").textContent = editingRoom.showDims ? "あり" : "なし";
   // 洗・冷の印。水まわりの設備の部屋・収納・階段・玄関・バルコニーには出さない
   const 印の部屋 = isEdit && editingRoom && roomType(editingRoom).key === type.key && 印を置ける部屋か(editingRoom);
   $("okibaRow").style.display = 印の部屋 ? "flex" : "none";
@@ -5555,6 +5618,15 @@ function 置き場を切り替える(key) {
   置き場のボタンを更新();
   render(); autoSave();
 }
+let 寸法線のボタンで積んだ = false;
+$("btnDims").addEventListener("click", () => {
+  const room = editingRoom;
+  if (!room) return;
+  if (!寸法線のボタンで積んだ) { snapshot(); 寸法線のボタンで積んだ = true; }
+  if (room.showDims) delete room.showDims; else room.showDims = true;
+  $("btnDims").textContent = room.showDims ? "あり" : "なし";
+  render(); autoSave();
+});
 $("btnAddNote").addEventListener("click", () => {
   const room = editingRoom;
   if (!room) return;
