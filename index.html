@@ -451,6 +451,10 @@
       <label>曲がり角</label>
       <button class="iconbtn" id="btnStairCorner">踊り場</button>
     </div>
+    <div class="field-row" id="kitchenRow" style="display:none;">
+      <label>キッチンの絵<br><small>図面でドラッグして動かせます</small></label>
+      <button class="iconbtn" id="btnKitchenOn">なし</button>
+    </div>
     <div class="field-row" id="fixtureSizeRow" style="display:none;">
       <label>設備の大きさ<br><small id="fixtureSizeText">幅 − × 奥行き − mm</small></label>
       <button class="iconbtn" id="btnFixtureReset">自動に戻す</button>
@@ -1519,7 +1523,7 @@ function drawHatchFill(room) {
 // ★2026-09-14 白井さん「トイレ風呂ガス台等の大きさ調整したくない？」→ Excel の図形のように枠のつまみで変える。
 //   物件ごとに違うのは主に間口(キッチン1650〜2700mm、浴槽1100〜1800mm、洗面台600〜1200mm)。奥行きも変えられる。
 function 設備の大きさ(room) {
-  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const size = FIXTURE_SIZE_MASU[設備の種類(room)];
   if (!size) return null;
   const f = room.fixtureSize;
   if (f && Number.isFinite(f.w) && Number.isFinite(f.d) && f.w > 0 && f.d > 0) return { w: f.w, d: f.d };
@@ -2080,8 +2084,8 @@ function drawRoomDecor(room) {
     dctx.translate(fp.x, fp.y);
     dctx.rotate((fixtureRotation(room) * Math.PI) / 180);
     // 幅と奥行きは別の倍率。手で変えていなければ両方とも「部屋に収める係数」で、これまでと同じ絵になる
-    const 大 = 設備の大きさ(room), 標準 = FIXTURE_SIZE_MASU[room.typeKey];
-    drawRoomFixture(room.typeKey, 0, 0, BASE_CELL * view.scale, 大.w / 標準.w, 大.d / 標準.d);
+    const 大 = 設備の大きさ(room), 標準 = FIXTURE_SIZE_MASU[設備の種類(room)];
+    drawRoomFixture(設備の種類(room), 0, 0, BASE_CELL * view.scale, 大.w / 標準.w, 大.d / 標準.d);
     dctx.restore();
   }
   dctx.restore();
@@ -2163,6 +2167,15 @@ function drawRoomDecor(room) {
 //   「部屋からはみ出しています」の判定と、見た目がずれる。
 // 局所の座標：中心(cx,cy)、横=幅(ux)・縦=奥行き(uy)で伸びる、上(-y)が壁側。丸いもの(五徳・水栓・排水口)は ur で丸いまま。
 const FIXTURE_ROOM_KEYS = ["wc", "yokushitsu", "senmen", "kitchen"];
+// 部屋に描く設備の種類("wc"|"yokushitsu"|"senmen"|"kitchen")。無ければ null。
+// ★2026-09-28 LDK にもキッチンを置けるようにした(room.kitchenOn)。レインズの図面の LDK には、
+//   ほぼ必ずキッチン(シンク・コンロ)が描いてある。それまでキッチンの絵は「キッチン」という
+//   種類の部屋にしか出なかった。既にある LDK に勝手に出ないよう、部屋の画面で「あり」にしたときだけ。
+function 設備の種類(room) {
+  if (FIXTURE_ROOM_KEYS.includes(room.typeKey)) return room.typeKey;
+  if (room.typeKey === "ldk" && room.kitchenOn) return "kitchen";
+  return null;
+}
 function drawRoomFixture(typeKey, cx, cy, unit, sx = 1, sy = 1) {
   const ux = unit * sx, uy = unit * sy, ur = unit * Math.min(sx, sy);
   const d = dctx;
@@ -2851,10 +2864,13 @@ function 設備を据える壁(room) {
     });
   }
   if (壁.length === 0) return null;
-  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const size = FIXTURE_SIZE_MASU[設備の種類(room)];
   // 「入口」は人が通る戸だけ。窓を入口として扱うと、窓の向かいに便器を据えてしまう。
   const 戸か = (d) => !(d.type === "window_slide" || d.type === "window_fix");
   const 入口 = (room.doors || []).filter(戸か).map((d) => d.edge);
+  // ★隣の部屋の戸がこの部屋の壁にあるときも入口。LDK は収納・トイレ・廊下の戸が LDK 側の壁に並ぶことが多く、
+  //   自分の戸だけを見ていたら、キッチンを収納の戸の前に据えていた(2026-09-28 LDK にキッチンを置けるようにして見つけた)
+  壁.forEach((w) => { if (!入口.includes(w.i) && ほかの部屋の戸がある辺か(room, w.i)) 入口.push(w.i); });
   const 窓 = (room.doors || []).filter((d) => !戸か(d)).map((d) => d.edge);
   // 向かいの判定は**すべての入口**に対して見る。以前は doors[0] だけを基準に
   // していたため、同じ建具の置き方でも登録した順番で設備の位置が変わっていた。
@@ -2870,9 +2886,28 @@ function 設備を据える壁(room) {
   return 壁.slice().sort((a, b) => 点数(b) - 点数(a))[0];
 }
 
+// 部屋 room の i 番目の辺の上に、ほかの部屋の戸(窓は数えない)があるか。図面の座標で見る
+function ほかの部屋の戸がある辺か(room, i) {
+  const pts = room.points;
+  const a = pts[i], b = pts[(i + 1) % pts.length];
+  const len = Math.hypot(b.gx - a.gx, b.gy - a.gy);
+  if (!(len > 0)) return false;
+  const ux = (b.gx - a.gx) / len, uy = (b.gy - a.gy) / len;
+  return state.rooms.some((r) => r !== room && (r.doors || []).some((d) => {
+    if (d.type === "window_slide" || d.type === "window_fix" || d.type === "window_bay") return false;
+    const p = r.points[d.edge], q = r.points[(d.edge + 1) % r.points.length];
+    if (!p || !q) return false;
+    const t = Number.isFinite(d.ratio) ? d.ratio : 0.5;
+    const c = { gx: p.gx + (q.gx - p.gx) * t, gy: p.gy + (q.gy - p.gy) * t };   // 戸の真ん中
+    const along = (c.gx - a.gx) * ux + (c.gy - a.gy) * uy;
+    const off = Math.abs((c.gx - a.gx) * uy - (c.gy - a.gy) * ux);
+    return off < 0.02 && along > 0 && along < len;
+  }));
+}
+
 // 部屋に収まるように縮める係数。壁より広い設備、奥行きの足りない部屋に備える。
 function fixtureFitRatio(room) {
-  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  const size = FIXTURE_SIZE_MASU[設備の種類(room)];
   const wall = 設備を据える壁(room);
   if (!size || !wall) return 1;
   const xs = room.points.map((p) => p.gx), ys = room.points.map((p) => p.gy);
@@ -2886,7 +2921,7 @@ function fixtureFitRatio(room) {
 const SHOW_ROOM_FIXTURES = true;
 function roomHasFixture(room) {
   if (!SHOW_ROOM_FIXTURES) return false;
-  return FIXTURE_ROOM_KEYS.includes(room.typeKey) && polygonScreenArea(room.points) >= 900;
+  return !!設備の種類(room) && polygonScreenArea(room.points) >= 900;
 }
 // 設備アイコンの向き(度数、0=初期の正立方向)。位置と同様にドラッグで変えられる。
 function fixtureRotation(room) {
@@ -4497,8 +4532,8 @@ function 形を当てはめる(room, 形) {
 // 設備の絵(大きさと向きを含む)が部屋からはみ出しているか。
 // ★絵は部屋の形で切り抜いて描くので、はみ出した部分は黙って消えて見える。
 function 設備がはみ出しているか(room) {
-  if (!SHOW_ROOM_FIXTURES || !FIXTURE_ROOM_KEYS.includes(room.typeKey)) return false;
-  const size = FIXTURE_SIZE_MASU[room.typeKey];
+  if (!SHOW_ROOM_FIXTURES || !設備の種類(room)) return false;
+  const size = FIXTURE_SIZE_MASU[設備の種類(room)];
   if (!size || room.points.length < 3) return false;
   const c = fixtureGridPos(room), 大 = 設備の大きさ(room);
   const rad = (fixtureRotation(room) * Math.PI) / 180, cos = Math.cos(rad), sin = Math.sin(rad);
@@ -4938,12 +4973,17 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
     if (editingRoom.fixtureSize) {
       $("fixtureSizeText").textContent = `幅 ${設備の寸法の文字(大.w)} × 奥行き ${設備の寸法の文字(大.d)} mm`;
     } else {
-      const 実寸 = FIXTURE_SIZE_MM[editingRoom.typeKey], k = fixtureFitRatio(editingRoom);
+      const 実寸 = FIXTURE_SIZE_MM[設備の種類(editingRoom)], k = fixtureFitRatio(editingRoom);
       const 丸め = (mm) => (Math.round((mm * k) / 5) * 5).toLocaleString("ja-JP");
       $("fixtureSizeText").textContent = `約 幅 ${丸め(実寸.w)} × 奥行き ${丸め(実寸.d)} mm（自動）`;
     }
     $("btnFixtureReset").disabled = !手で;
   }
+  // LDK のキッチンの絵(あり/なし)。押したその場で描く(下から出る画面の上に図面が見えている)
+  const LDKの部屋 = isEdit && editingRoom && type.key === "ldk" && editingRoom.typeKey === "ldk";
+  $("kitchenRow").style.display = LDKの部屋 ? "flex" : "none";
+  キッチンのボタンで積んだ = false;
+  if (LDKの部屋) $("btnKitchenOn").textContent = editingRoom.kitchenOn ? "あり" : "なし";
   // 室名の位置。新しく描いた部屋(まだ図面に無い)・室名を出さない種類(廊下など)では出さない
   const 室名の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && !type.noLabel;
   $("labelPosRow").style.display = 室名の部屋 ? "flex" : "none";
@@ -4982,6 +5022,27 @@ $("btnLabelPosReset").addEventListener("click", () => {
   delete room.labelPos;
   render(); autoSave();
   室名の位置の表示を更新();
+});
+let キッチンのボタンで積んだ = false;
+$("btnKitchenOn").addEventListener("click", () => {
+  const room = editingRoom;
+  if (!room || room.typeKey !== "ldk") return;
+  if (!キッチンのボタンで積んだ) { snapshot(); キッチンのボタンで積んだ = true; }
+  // 消しても、手で決めた位置・向き・大きさは残す(もう一度「あり」にすると元の所に出る)
+  if (room.kitchenOn) delete room.kitchenOn; else room.kitchenOn = true;
+  $("btnKitchenOn").textContent = room.kitchenOn ? "あり" : "なし";
+  // 設備の大きさの行も出し直す
+  const 設備の部屋 = roomHasFixture(room);
+  $("fixtureSizeRow").style.display = 設備の部屋 ? "flex" : "none";
+  if (設備の部屋) {
+    const 大 = 設備の大きさ(room);
+    $("fixtureSizeText").textContent = room.fixtureSize
+      ? `幅 ${設備の寸法の文字(大.w)} × 奥行き ${設備の寸法の文字(大.d)} mm`
+      : `約 幅 ${(Math.round(FIXTURE_SIZE_MM.kitchen.w * fixtureFitRatio(room) / 5) * 5).toLocaleString("ja-JP")} × 奥行き ${(Math.round(FIXTURE_SIZE_MM.kitchen.d * fixtureFitRatio(room) / 5) * 5).toLocaleString("ja-JP")} mm（自動）`;
+    $("btnFixtureReset").disabled = !(room.fixtureSize || room.fixturePos || room.fixtureRotation != null);
+  }
+  render(); autoSave();
+  if (room.kitchenOn) showHint(roomHasFixture(room) ? "キッチンを描きました。部屋を選ぶと、点線の丸で位置、先の丸で向き、枠のつまみで大きさを変えられます" : "キッチンを描くには部屋が小さすぎます（拡大すると出ます）");
 });
 $("btnFixtureReset").addEventListener("click", () => {
   $("tatamiModal").dataset.fixtureReset = "1";
