@@ -1027,25 +1027,27 @@ const ROOM_TYPES = [
   { key: "ldk", label: "LDK", em: "🍽️", color: "#fff3e0", stroke: "#f0b26a" },
   { key: "kitchen", label: "キッチン", em: "🍳", color: "#fff8e1", stroke: "#e0a95f" },
   { key: "washitsu", label: "和室", em: "🎎", color: "#f1f8e9", stroke: "#9ccf6a" },
-  { key: "genkan", label: "玄関", em: "🚪", color: "#f5f0ff", stroke: "#b39ddb" },
+  { key: "genkan", label: "玄関", em: "🚪", color: "#f5f0ff", stroke: "#b39ddb", hideTatami: true },
   // 塗り色・枠線とも、キャンバス背景(白)に対してうっすらとした差しか無く、
   // 意図して描いた通路なのか単なる余白なのか判別しづらいという指摘があったため、
   // 色相は無彩色のまま(廊下らしい控えめさは保ちつつ)濃さだけを強めた(再調査で発見)。
   { key: "rouka", label: "廊下", em: "🚶", color: "#e9eaec", stroke: "#9aa1ab", noLabel: true },
   // トイレ・浴室・洗面所・押入は、畳数を表示せず室名だけにする(hideTatami)。
+  // ★2026-09-28 玄関・収納・ベランダも名前だけにした。レインズの図面(プロの図面)を拡大した9枚すべてで、
+  //   玄関・収納・バルコニーに帖数を書いていなかった。WIC・UT は帖数を書く図面もあるので残す。
   // ただし合計畳数の計算には引き続き含める(excludeFromTotalとは異なる)。
   { key: "wc", label: "トイレ", em: "🚽", color: "#e0f7fa", stroke: "#4dd0e1", hideTatami: true },
   { key: "yokushitsu", label: "浴室", em: "🛁", color: "#e1f5fe", stroke: "#4fc3f7", hideTatami: true },
   { key: "senmen", label: "洗面所", em: "🚰", color: "#e8f5e9", stroke: "#81c784", hideTatami: true },
   { key: "oshiire", label: "押入", em: "📦", color: "#fdf6e3", stroke: "#d6c26a", hideTatami: true },
-  { key: "shuno", label: "収納", em: "🗄️", color: "#f5f0e3", stroke: "#c9a96a" },
+  { key: "shuno", label: "収納", em: "🗄️", color: "#f5f0e3", stroke: "#c9a96a", hideTatami: true },
   { key: "wic", label: "WIC", em: "👚", color: "#f3ecf8", stroke: "#a985c9" },
   { key: "kaidan", label: "階段", em: "🪜", color: "#eef1f4", stroke: "#8b96a3", hideTatami: true },
   { key: "ut", label: "UT", em: "🧺", color: "#e9f4f5", stroke: "#6bb0b8" },
   // ベランダ・柱等のデッドスペースは、専有面積に含めない不動産実務の慣習に
   // 合わせ、合計畳数・部屋数のどちらにも数えない(excludeFromTotal)。見た目は
   // 押入等と同じ斜線ハッチングにし、「主要な居室ではない」ことを示す。
-  { key: "veranda", label: "ベランダ", em: "🌤️", color: "#eef2f5", stroke: "#9fb3c2", excludeFromTotal: true },
+  { key: "veranda", label: "ベランダ", em: "🌤️", color: "#eef2f5", stroke: "#9fb3c2", excludeFromTotal: true, hideTatami: true },
   { key: "deadspace", label: "デッドスペース", em: "⬛", color: "#dcdee1", stroke: "#7a828a", excludeFromTotal: true, noLabel: true },
   { key: "sonota", label: "その他", em: "▫️", color: "#f0f0f0", stroke: "#b0b0b0" },
 ];
