@@ -1130,6 +1130,8 @@ const DOOR_TYPES = [
   { key: "fold", label: "折れ戸", group: "door", defaultWidthMasu: 0.9 },
   { key: "window_slide", label: "引き違い窓", group: "window", defaultWidthMasu: 1.85 },
   { key: "window_fix", label: "FIX窓", group: "window", defaultWidthMasu: 0.9 },
+  // ★2026-09-28 出窓。壁の外へ台形に張り出す(レインズの図面 #36・#39)。古い版は FIX窓として描く
+  { key: "window_bay", label: "出窓", group: "window", defaultWidthMasu: 1.8 },
 ];
 function defaultWidthMasuForType(key) {
   const t = DOOR_TYPES.find((x) => x.key === key);
@@ -3209,7 +3211,7 @@ function 設備を据える壁(room) {
   if (壁.length === 0) return null;
   const size = FIXTURE_SIZE_MASU[設備の種類(room)];
   // 「入口」は人が通る戸だけ。窓を入口として扱うと、窓の向かいに便器を据えてしまう。
-  const 戸か = (d) => !(d.type === "window_slide" || d.type === "window_fix");
+  const 戸か = (d) => !(d.type === "window_slide" || d.type === "window_fix" || d.type === "window_bay");
   const 入口 = (room.doors || []).filter(戸か).map((d) => d.edge);
   // ★隣の部屋の戸がこの部屋の壁にあるときも入口。LDK は収納・トイレ・廊下の戸が LDK 側の壁に並ぶことが多く、
   //   自分の戸だけを見ていたら、キッチンを収納の戸の前に据えていた(2026-09-28 LDK にキッチンを置けるようにして見つけた)
@@ -3692,6 +3694,26 @@ function drawDoorMark(room, door) {
     }
     dctx.stroke();
     drawOpeningJamb(a, b, nx, ny, 4.5 * zs, zs);
+  } else if (type === "window_bay") {
+    // 出窓: 開口から壁の外へ台形に張り出す(奥行き 0.35マス ≒ 320mm、横は奥行きの0.8倍ずつ絞る)。
+    //   外側の辺の少し内側にガラスの細い線、室内側の面に窓台の縁の線。
+    const 奥 = Math.min(BASE_CELL * view.scale * 0.35, doorWidth * 0.4);
+    const 絞り = 奥 * 0.8;
+    const 外へ = (p, 外, 沿) => ({ x: p.x - nx * 外 + ux * 沿, y: p.y - ny * 外 + uy * 沿 });
+    const A2 = 外へ(a, 奥, 絞り), B2 = 外へ(b, 奥, -絞り);
+    const 形 = () => { dctx.beginPath(); dctx.moveTo(a.x, a.y); dctx.lineTo(A2.x, A2.y); dctx.lineTo(B2.x, B2.y); dctx.lineTo(b.x, b.y); };
+    形(); dctx.closePath();
+    dctx.fillStyle = colorScheme === "maisoku" ? "#ffffff" : 窓の水色;
+    dctx.fill();
+    dctx.lineWidth = 1.6 * zs; dctx.lineJoin = "miter";
+    形(); dctx.stroke();
+    const k = Math.max(0, 1 - (2.6 * zs) / 奥);   // ガラスの線は外側の辺から 2.6 だけ内側
+    const G1 = 外へ(a, 奥 * k, 絞り * k), G2 = 外へ(b, 奥 * k, -絞り * k);
+    dctx.lineWidth = 1.1 * zs;
+    dctx.beginPath(); dctx.moveTo(G1.x, G1.y); dctx.lineTo(G2.x, G2.y); dctx.stroke();
+    const 面 = Math.max(3.6 * zs, 壁の太さ() / 2);   // 室内側の面(窓台の縁)
+    dctx.beginPath(); dctx.moveTo(a.x + nx * 面, a.y + ny * 面); dctx.lineTo(b.x + nx * 面, b.y + ny * 面); dctx.stroke();
+    drawOpeningJamb(a, b, nx, ny, 面, zs);
   } else if (type === "slide_double") {
     // 引き違い戸: 2枚の戸が別々の溝を通る。開口を左右半分ずつに分け、
     // 一方を手前の溝、もう一方を奥の溝へずらして中央で少し重ねる(実物の
@@ -5803,6 +5825,7 @@ function miniDoorPreviewSVG(key) {
   // 窓は盤面と同じく水色の帯。引き違い窓は真ん中に仕切り、FIX窓は仕切りなし
   const 窓の帯 = `<rect x="6" y="10" width="48" height="14" fill="${窓の水色}" stroke="#1c2733" stroke-width="1.3"/>`;
   if (key === "window_slide") return `<svg ${common}>${窓の帯}<path d="M30 10 L30 24" stroke="#1c2733" stroke-width="1.3"/></svg>`;
+  if (key === "window_bay") return `<svg ${common}><path d="M4 22 L56 22" stroke="#c7ced6" stroke-width="2"/><path d="M8 22 L18 8 L42 8 L52 22 Z" fill="${窓の水色}" stroke="#1c2733" stroke-width="1.4" stroke-linejoin="miter"/><path d="M14 18 L20 11 L40 11 L46 18" fill="none" stroke="#1c2733" stroke-width="1"/></svg>`;
   return `<svg ${common}>${窓の帯}</svg>`; // window_fix
 }
 
