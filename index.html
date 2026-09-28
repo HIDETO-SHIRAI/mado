@@ -1535,6 +1535,38 @@ function render() {
 //   デッドスペースは「部屋ではない」印なので、カラーでも斜線のまま。
 const HATCH_ROOM_KEYS = ["genkan", "oshiire", "shuno", "wic", "ut", "veranda", "deadspace"];
 const カラーでも斜線 = ["deadspace"];
+// 床の木目(マイソク風の配色だけ)。★2026-09-28 レインズの図面では洋室・LDKにフローリングの板目を描くものがある(#1・#39)。
+//   板(幅 0.18マス ≒ 160mm)を部屋の長い辺の向きに並べ、板の継ぎ目を段ごとにずらす。飾りなので薄く。
+const 床の木目の部屋 = ["youshitsu", "ldk", "kitchen", "rouka"];
+function drawFlooring(room) {
+  const pts = room.points.map((p) => gridToScreen(p.gx, p.gy));
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const c = BASE_CELL * view.scale;
+  if (!(c >= 20)) return;   // 小さく表示しているときは描かない
+  const 板 = c * 0.18, 長さ = c * 1.8;
+  const 横長 = maxX - minX >= maxY - minY;
+  dctx.save();
+  roomPath(room);
+  dctx.clip();
+  dctx.strokeStyle = "rgba(150,105,60,0.16)";
+  dctx.lineWidth = 1;
+  dctx.beginPath();
+  if (横長) {
+    for (let k = 0, y = minY + 板; y < maxY; k++, y += 板) {
+      dctx.moveTo(minX, y); dctx.lineTo(maxX, y);
+      for (let x = minX + ((k * 0.37) % 1) * 長さ; x < maxX; x += 長さ) { dctx.moveTo(x, y - 板); dctx.lineTo(x, y); }
+    }
+  } else {
+    for (let k = 0, x = minX + 板; x < maxX; k++, x += 板) {
+      dctx.moveTo(x, minY); dctx.lineTo(x, maxY);
+      for (let y = minY + ((k * 0.37) % 1) * 長さ; y < maxY; y += 長さ) { dctx.moveTo(x - 板, y); dctx.lineTo(x, y); }
+    }
+  }
+  dctx.stroke();
+  dctx.restore();
+}
+
 // 和室の畳の線。★2026-09-28 レインズの図面では、和室に畳の割り付けの線を描くことが多い(#36・#81・#99・#101)。
 //   畳1枚 = 1×2マス(江戸間 880×1760mm ≒ 0.97×1.93マス)。部屋の壁から敷き始め、長い辺の向きに畳を並べ、
 //   段ごとに1マスずらす(4枚の角が1点に集まらない敷き方に近い)。端は半畳になる。
@@ -2325,6 +2357,7 @@ function drawRoomFill(room) {
   } else if (room.typeKey === "genkan") drawTileFill(room);
   else if (カラーでも斜線.includes(room.typeKey)) drawHatchFill(room);
   if (room.typeKey === "washitsu") drawTatamiLines(room);   // 和室の畳の線(どちらの配色でも)
+  if (colorScheme === "maisoku" && 床の木目の部屋.includes(room.typeKey)) drawFlooring(room);
 }
 
 // (2) 壁。建具のあるところは描かない = そこが開口部になる
