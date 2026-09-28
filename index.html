@@ -478,6 +478,10 @@
       <label>設備の大きさ<br><small id="fixtureSizeText">幅 − × 奥行き − mm</small></label>
       <button class="iconbtn" id="btnFixtureReset">自動に戻す</button>
     </div>
+    <div class="field-row" id="notesRow" style="display:none;">
+      <label>建物の外の文字<br><small>庭・道路・共用廊下など。図面でドラッグ、タップで直す</small></label>
+      <button class="iconbtn" id="btnAddNote">＋ 文字を足す</button>
+    </div>
     <div class="field-row" id="okibaRow" style="display:none;">
       <label>置き場の印<br><small>図面でドラッグして動かせます</small></label>
       <div class="stepper okiba-btns">
@@ -617,6 +621,7 @@
     <input type="text" class="text-input" id="textInputField">
     <div class="input-error" id="textInputError"></div>
     <div class="modal-actions">
+      <button class="btn danger" id="btnTextInputDelete" style="display:none;">消す</button>
       <button class="btn" id="btnTextInputCancel">キャンセル</button>
       <button class="btn primary" id="btnTextInputOk">OK</button>
     </div>
@@ -1234,6 +1239,7 @@ let vertexDrag = null; // {room, index} 頂点ハンドルをドラッグ中の�
 let fixtureDrag = null; // {room} トイレ等の設備アイコンをドラッグ中の状態
 let fixtureRotateDrag = null; // {room} 設備アイコンの回転ハンドルをドラッグ中の状態
 let 設備の大きさドラッグ = null; // 設備の枠のつまみ(角・辺)を引っ張って大きさを変えている間の状態
+let 外の文字ドラッグ = null; // 建物の外の文字をつかんでいる間(動かさずに離したら、文字を直す画面)
 let 置き場ドラッグ = null; // 選んだ部屋の洗・冷の印をつかんでいる間(動かさずに離したら、ただのタップ)
 let 室名ドラッグ = null; // 選んだ部屋の室名の文字をつかんでいる間の状態(動かさずに離したら、ただのタップ)
 let doorDrag = null; // {room, doorIndex, moved} 既存建具をドラッグして壁沿いに移動中の状態
@@ -1453,6 +1459,7 @@ function render() {
     drawStairArrowIfNeeded(room);
   });
   for (const room of state.rooms) drawRoomDecor(room);
+  for (const room of state.rooms) 外の文字を描く(room);   // 建物の外の文字(庭・道路など)
   // 選択中の青い頂点ハンドルと設備のつまみ。触るためのものなので書き出しでは描かない
   if (!isExportRender && currentTool === "wall" && editingRoom) {
     // 壁の長さ(mm)とそのつまみ。パソコンだけ。★角・設備のつまみより先に描く(重なったら、上に見える
@@ -2082,6 +2089,71 @@ function 室名の枠の中か(room, sx, sy) {
   const f = 室名の描いた枠.get(room);
   return !!f && Math.abs(sx - f.x) <= f.w / 2 + 5 && Math.abs(sy - f.y) <= f.h / 2 + 3;
 }
+// ---- 建物の外の文字(庭・道路・共用廊下など) ------------------------------------
+// ★2026-09-28 レインズの図面には、建物の外に「庭」「共用廊下」「テラス」などの文字がある(#1・#81)。
+//   階ごとの保存は {rooms, northAngle} 決め打ちで、階に足した項目は古い版で保存すると消える。
+//   だから文字は近くの部屋に持たせる(room.notes = [{ text, gx, gy }]、図面の座標)。
+//   部屋を矢印キーで動かすと一緒に動く。部屋を消すと一緒に消える。
+const 外の文字の枠 = new WeakMap();   // room → [{ i, x, y, w, h }](画面に描いた所。つかむ用)
+function 外の文字の大きさ() { return 14 + (isExportRender ? EXPORT_LABEL_BOOST : 0); }
+function 外の文字か(n) { return !!n && typeof n.text === "string" && !!n.text.trim() && Number.isFinite(n.gx) && Number.isFinite(n.gy); }
+function 外の文字を描く(room) {
+  const 枠 = [];
+  (room.notes || []).forEach((n, i) => {
+    if (!外の文字か(n)) return;
+    const c = gridToScreen(n.gx, n.gy), size = 外の文字の大きさ(), t = n.text.trim();
+    dctx.save();
+    dctx.font = `${size}px -apple-system, sans-serif`;
+    dctx.textAlign = "center"; dctx.textBaseline = "middle";
+    dctx.lineWidth = 3; dctx.strokeStyle = "rgba(255,255,255,.9)"; dctx.fillStyle = "#1c2733";
+    dctx.strokeText(t, c.x, c.y); dctx.fillText(t, c.x, c.y);
+    const w = dctx.measureText(t).width;
+    if (!isExportRender && editingRoom === room) {   // 選んだ部屋の文字は紫の点線で囲む(つかめる印)
+      角丸の四角(c.x - w / 2 - 5, c.y - size / 2 - 3, w + 10, size + 6, 5);
+      dctx.setLineDash([3, 3]); dctx.strokeStyle = "#6f4fed"; dctx.lineWidth = 1.4; dctx.stroke();
+    }
+    dctx.restore();
+    枠.push({ i, x: c.x, y: c.y, w, h: size });
+  });
+  if (!isExportRender) 外の文字の枠.set(room, 枠);
+}
+// 押した所にある外の文字 { room, i } か null。どの部屋の文字でもつかめる(選んでいなくても)
+function 外の文字に当たるか(sx, sy) {
+  for (let r = state.rooms.length - 1; r >= 0; r--) {
+    const room = state.rooms[r];
+    for (const f of 外の文字の枠.get(room) || []) {
+      if (!外の文字か((room.notes || [])[f.i])) continue;
+      if (Math.abs(sx - f.x) <= Math.max(f.w / 2 + 6, 18) && Math.abs(sy - f.y) <= Math.max(f.h / 2 + 5, 14)) return { room, i: f.i };
+    }
+  }
+  return null;
+}
+// 新しい文字を置く所：部屋の下(ほかの部屋に入っていなければ)。だめなら上・右・左
+function 外の文字の初めの位置(room) {
+  const xs = room.points.map((p) => p.gx), ys = room.points.map((p) => p.gy);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const 候補 = [
+    { gx: cx, gy: Math.max(...ys) + 0.6 }, { gx: cx, gy: Math.min(...ys) - 0.6 },
+    { gx: Math.max(...xs) + 1.0, gy: cy }, { gx: Math.min(...xs) - 1.0, gy: cy },
+  ];
+  return 候補.find((g) => !state.rooms.some((r) => isPointInPolygonGrid(g.gx, g.gy, r.points))) || 候補[0];
+}
+function 外の文字を直す(room, i) {
+  const n = (room.notes || [])[i];
+  if (!外の文字か(n)) return;
+  openTextInput("建物の外の文字を直す", n.text, (v) => {
+    snapshot();
+    n.text = v;
+    render(); autoSave();
+  }, null, () => {
+    snapshot();
+    room.notes.splice(i, 1);
+    if (!room.notes.length) delete room.notes;
+    render(); autoSave();
+    showHint("文字を消しました（戻すで元に戻せます）");
+  });
+}
+
 // ---- 洗濯機・冷蔵庫の置き場の印 ------------------------------------------------
 // ★2026-09-28 レインズの図面では、点線の四角に「洗」「冷」(#0・#3・#79・#81・#101)。
 //   room.washer / room.fridge に四角の真ん中(図面の座標)を持つ。無ければ印なし。
@@ -3825,6 +3897,7 @@ function startPinch() {
   // 室名をつかんだだけで2本目の指が来たら、つかんだのは無しにする(離したときに「タップ」と見て編集メニューが開くため)
   if (室名ドラッグ && !室名ドラッグ.動き出した) 室名ドラッグ = null;
   if (置き場ドラッグ && !置き場ドラッグ.動き出した) 置き場ドラッグ = null;
+  if (外の文字ドラッグ && !外の文字ドラッグ.動き出した) 外の文字ドラッグ = null;
   const pts = [...pointers.values()];
   const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
@@ -3924,6 +3997,18 @@ function tryRoomSelectionTap(sx, sy) {
       return true;
     }
   }
+  // 建物の外の文字。どの部屋の文字でも、つかむとその部屋を選ぶ(タップだけなら文字を直す画面)
+  const 文字 = 外の文字に当たるか(sx, sy);
+  if (文字) {
+    editingRoom = 文字.room;
+    const n = 文字.room.notes[文字.i];
+    外の文字ドラッグ = {
+      room: 文字.room, i: 文字.i, 始めのJSON: JSON.stringify(state.rooms), 積んだ: false,
+      始めの画面: { x: sx, y: sy }, 始めの位置: { gx: n.gx, gy: n.gy }, 動き出した: false,
+    };
+    render();
+    return true;
+  }
   const w = screenToGridRaw(sx, sy);
   const room = hitTestRoom(w.gx, w.gy);
   if (room) {
@@ -3999,7 +4084,7 @@ function handleSingleTouchStart(sx, sy) {
     // ★選んだ部屋の室名(点線の枠の中)は、建具より先に掴む。狭いトイレ・洗面所では室名が戸の弧の
     //   上にあり(開き戸の当たりは弧の向きへ戸の幅だけ伸びる)、室名をつかもうとすると建具の画面が開いていた。
     //   枠の外なら建具はこれまでどおり。角・設備のつまみは室名より先(tryRoomSelectionTap の順)
-    if (existingDoor && !(editingRoom && (室名の枠の中か(editingRoom, sx, sy) || 置き場に当たるか(editingRoom, sx, sy)))) {
+    if (existingDoor && !外の文字に当たるか(sx, sy) && !(editingRoom && (室名の枠の中か(editingRoom, sx, sy) || 置き場に当たるか(editingRoom, sx, sy)))) {
       openDoorEditModal(existingDoor.room, existingDoor.index);
       return;
     }
@@ -4082,6 +4167,23 @@ drawCanvas.addEventListener("pointermove", (e) => {
       room.fixturePos = candidate;
       render();
     }
+    return;
+  }
+
+  if (外の文字ドラッグ && pointers.size === 1) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const d = 外の文字ドラッグ;
+    if (!d.動き出した) {
+      if (Math.hypot(sx - d.始めの画面.x, sy - d.始めの画面.y) < 6) return;
+      d.動き出した = true;
+    }
+    const 今 = screenToGridRaw(sx, sy), 始め = screenToGridRaw(d.始めの画面.x, d.始めの画面.y);
+    const n = d.room.notes && d.room.notes[d.i];
+    if (!n) return;
+    if (!d.積んだ) { 履歴に積む(d.始めのJSON); d.積んだ = true; }
+    n.gx = d.始めの位置.gx + 今.gx - 始め.gx; n.gy = d.始めの位置.gy + 今.gy - 始め.gy;
+    render();
     return;
   }
 
@@ -4332,6 +4434,14 @@ function finalizeActiveDrags() {
   if (fixtureDrag) {
     fixtureDrag = null;
     render(); autoSave();
+    return true;
+  }
+  if (外の文字ドラッグ) {
+    const d = 外の文字ドラッグ;
+    外の文字ドラッグ = null;
+    if (!d.動き出した) { 外の文字を直す(d.room, d.i); return true; }
+    render();
+    if (d.積んだ) autoSave();
     return true;
   }
   if (置き場ドラッグ) {
@@ -4901,7 +5011,8 @@ drawCanvas.addEventListener("pointermove", (e) => {
   if (!壁ドラッグ && currentTool === "wall" && drawingPoints.length === 0) {
     const d = 設備の大きさドラッグ;
     if (d) 形 = 設備の大きさのカーソル(d.room, d.ix, d.iy);
-    else if ((室名ドラッグ && 室名ドラッグ.動き出した) || (置き場ドラッグ && 置き場ドラッグ.動き出した)) 形 = "move";
+    else if ((室名ドラッグ && 室名ドラッグ.動き出した) || (置き場ドラッグ && 置き場ドラッグ.動き出した) || (外の文字ドラッグ && 外の文字ドラッグ.動き出した)) 形 = "move";
+    else if (pointers.size === 0 && 外の文字に当たるか(sx, sy)) 形 = "move";
     else if (editingRoom && pointers.size === 0) {
       const { 角, 設備 } = 選んだ部屋のつまみ(editingRoom, sx, sy);   // 押したときと同じ決め方
       if (設備) 形 = 設備.種類 === "大きさ" ? 設備の大きさのカーソル(editingRoom, 設備.ix, 設備.iy) : (設備.種類 === "動かす" ? "move" : "grab");
@@ -4983,6 +5094,10 @@ function 選んだ部屋を動かす(dx, dy, 大きく) {
   if (room.fixturePos) {
     room.fixturePos = { gx: 刻みに戻す(room.fixturePos.gx + dx * 歩幅), gy: 刻みに戻す(room.fixturePos.gy + dy * 歩幅) };
   }
+  // 建物の外の文字も一緒に
+  (room.notes || []).forEach((n) => {
+    if (Number.isFinite(n.gx) && Number.isFinite(n.gy)) { n.gx = 刻みに戻す(n.gx + dx * 歩幅); n.gy = 刻みに戻す(n.gy + dy * 歩幅); }
+  });
   // 洗・冷の印も図面上の座標
   置き場の種類.forEach((t) => {
     const g = 置き場の位置(room, t.key);
@@ -5232,6 +5347,8 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   $("kitchenRow").style.display = LDKの部屋 ? "flex" : "none";
   キッチンのボタンで積んだ = false;
   if (LDKの部屋) $("btnKitchenOn").textContent = editingRoom.kitchenOn ? "あり" : "なし";
+  // 建物の外の文字(図面にある部屋を開いたときだけ)
+  $("notesRow").style.display = isEdit && editingRoom ? "flex" : "none";
   // 洗・冷の印。水まわりの設備の部屋・収納・階段・玄関・バルコニーには出さない
   const 印の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && 印を置ける部屋か(editingRoom);
   $("okibaRow").style.display = 印の部屋 ? "flex" : "none";
@@ -5298,6 +5415,17 @@ function 置き場を切り替える(key) {
   置き場のボタンを更新();
   render(); autoSave();
 }
+$("btnAddNote").addEventListener("click", () => {
+  const room = editingRoom;
+  if (!room) return;
+  openTextInput("建物の外に書く文字（例：庭・道路・共用廊下・駐車場）", "", (v) => {
+    snapshot();
+    const g = 外の文字の初めの位置(room);
+    room.notes = [...(room.notes || []).filter(外の文字か), { text: v, gx: g.gx, gy: g.gy }];
+    render(); autoSave();
+    showHint("文字を足しました。ドラッグで好きな所へ動かせます。タップすると直す・消すができます");
+  });
+});
 $("btnWasher").addEventListener("click", () => 置き場を切り替える("washer"));
 $("btnFridge").addEventListener("click", () => 置き場を切り替える("fridge"));
 let キッチンのボタンで積んだ = false;
@@ -5864,7 +5992,7 @@ document.querySelectorAll(".tool[data-tool]").forEach((btn) => {
     btn.classList.add("active");
     currentTool = btn.dataset.tool;
     cancelDrawing();
-    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
+    editingRoom = null; vertexDrag = null; fixtureDrag = null; fixtureRotateDrag = null; 設備の大きさドラッグ = null; 室名ドラッグ = null; 置き場ドラッグ = null; 外の文字ドラッグ = null; doorDrag = null; 壁ドラッグ = null; 選んだ壁 = null;
     if (currentTool === "door") showHint("建具を付けたい壁の近くをタップ。既にある建具はタップで編集、ドラッグで移動(壁の外側まで動かすと外開きに切替)できます", true);
     if (currentTool === "wall") showHint("何もない場所は指でなぞって部屋を描けます。部屋の中をタップすると選択して編集できます");
     render();
@@ -5997,6 +6125,13 @@ function buildExportCanvas(scale, transparent) {
   state.rooms.forEach((room) => room.points.forEach((p) => {
     minGx = Math.min(minGx, p.gx); maxGx = Math.max(maxGx, p.gx);
     minGy = Math.min(minGy, p.gy); maxGy = Math.max(maxGy, p.gy);
+  }));
+  // 建物の外の文字も入るように(文字の幅はおおよそ 1字 0.35マス)
+  state.rooms.forEach((room) => (room.notes || []).forEach((n) => {
+    if (!外の文字か(n)) return;
+    const 半幅 = ([...n.text.trim()].length * 0.35) / 2;
+    minGx = Math.min(minGx, n.gx - 半幅); maxGx = Math.max(maxGx, n.gx + 半幅);
+    minGy = Math.min(minGy, n.gy - 0.3); maxGy = Math.max(maxGy, n.gy + 0.3);
   }));
   const marginMasu = 1;
   const contentW = (maxGx - minGx + marginMasu * 2) * BASE_CELL;
@@ -6383,7 +6518,11 @@ function hideModal(id) {
 /* ---------------- 汎用モーダル: テキスト入力 / 確認 ---------------- */
 let textInputCallback = null;
 let textInputValidator = null;
-function openTextInput(title, defaultValue, callback, validator) {
+let textInputDeleteCallback = null;
+function openTextInput(title, defaultValue, callback, validator, onDelete) {
+  // onDelete があるときだけ「消す」を出す(建物の外の文字を直すとき)
+  textInputDeleteCallback = onDelete || null;
+  $("btnTextInputDelete").style.display = onDelete ? "block" : "none";
   $("textInputTitle").textContent = title;
   $("textInputField").value = defaultValue || "";
   $("textInputError").textContent = "";
@@ -6392,7 +6531,12 @@ function openTextInput(title, defaultValue, callback, validator) {
   showModal("textInputModal");
   setTimeout(() => $("textInputField").focus(), 50);
 }
-$("btnTextInputCancel").addEventListener("click", () => { hideModal("textInputModal"); textInputCallback = null; });
+$("btnTextInputCancel").addEventListener("click", () => { hideModal("textInputModal"); textInputCallback = null; textInputDeleteCallback = null; });
+$("btnTextInputDelete").addEventListener("click", () => {
+  const cb = textInputDeleteCallback;
+  hideModal("textInputModal"); textInputCallback = null; textInputDeleteCallback = null;
+  if (cb) cb();
+});
 $("btnTextInputOk").addEventListener("click", () => {
   const v = $("textInputField").value.trim();
   if (!v) return;
