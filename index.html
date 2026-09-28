@@ -443,6 +443,10 @@
       <label>上り下りの向き</label>
       <button class="iconbtn" id="btnRotateStairDir">🔄 基準</button>
     </div>
+    <div class="field-row" id="stairLabelRow" style="display:none;">
+      <label>階段の文字</label>
+      <button class="iconbtn" id="btnStairLabel">UP</button>
+    </div>
     <div class="field-row" id="stairCornerRow" style="display:none;">
       <label>曲がり角</label>
       <button class="iconbtn" id="btnStairCorner">踊り場</button>
@@ -1655,6 +1659,23 @@ function 点が多角形の中か(pts, x, y) {
 // ★階段は探さない。矢じりを避けて上り口の側へ寄せる、これまでの置き方のまま(階段の室名の位置)。
 const 室名の余白_マス = 0.3;   // 壁・設備からこれだけ離れていれば十分。それより先は「真ん中に近い方」で選ぶ
 
+// 図面に書く部屋の名前。階段は「UP」「DN」(レインズの図面の書き方)。
+function 室名の名前(room) {
+  const type = roomType(room);
+  if (room.typeKey === "kaidan") return 階段の文字(room);
+  return type.label;
+}
+// 階段の文字。★2026-09-28 プロの図面は矢印に「UP」「DN」を添える(下の階から上る所が UP、上の階から下りる所が DN)。
+//   手で選んでいなければ、1階は UP、それ以外の階は DN。部屋の画面の「階段の文字」で UP / DN / 階段 を選べる。
+const 階段の文字の候補 = ["UP", "DN", "階段"];
+function 階段の文字(room) {
+  if (階段の文字の候補.includes(room.stairLabel)) return room.stairLabel;
+  return 階段の文字の自動(state.floorName);
+}
+function 階段の文字の自動(floorName) {
+  return /^\s*(1|１)\s*(F|Ｆ|階)?\s*$/i.test(String(floorName || "")) ? "UP" : "DN";
+}
+
 function 畳の文字(room) {
   // 和室は畳が実際に敷いてあるので実寸だが、それ以外は畳に換算した目安なので
   // 「約」を付ける(2026-09-08 笹原さんの要望)。
@@ -1681,7 +1702,8 @@ function 室名の枠の大きさ(room) {
   const type = roomType(room);
   const 面積 = polygonScreenArea(room.points);
   const size = 室名の文字の大きさ(面積);
-  const 行 = type.hideTatami ? [type.label] : (面積 < 1600 ? [畳の文字(room)] : [type.label, 畳の文字(room)]);
+  const 名前 = 室名の名前(room);
+  const 行 = type.hideTatami ? [名前] : (面積 < 1600 ? [畳の文字(room)] : [名前, 畳の文字(room)]);
   dctx.save();
   dctx.font = 室名の書体(size);
   const w = Math.max(...行.map((l) => dctx.measureText(l).width)) + 4;   // 白い縁取りの分
@@ -2028,10 +2050,10 @@ function drawRoomDecor(room) {
   let result;
   if (type.hideTatami) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
-    result = fitLines(type.label, startSize);
+    result = fitLines(室名の名前(room), startSize);
   } else {
     const tatamiText = 畳の文字(room);
-    result = fitLines(areaPx < 1600 ? tatamiText : `${type.label}\n${tatamiText}`, startSize);
+    result = fitLines(areaPx < 1600 ? tatamiText : `${室名の名前(room)}\n${tatamiText}`, startSize);
     if (!result.fits && result.lines.length > 1) {
       result = fitLines(tatamiText, startSize);
     }
@@ -4779,6 +4801,7 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
 
   const isStair = type.key === "kaidan";
   $("stepCountRow").style.display = isStair ? "flex" : "none";
+  $("stairLabelRow").style.display = isStair ? "flex" : "none";
   $("stairDirRow").style.display = isStair ? "flex" : "none";
   if (isStair) {
     const existing = (isEdit && editingRoom && editingRoom.stepCount) || (pendingRoom && pendingRoom.stepCount) || DEFAULT_STEP_COUNT;
@@ -4802,6 +4825,9 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
     // 曲がり角の描き方はL字だけで意味がある(長方形・U字では絵が変わらない)ので、L字のときだけ見せる
     $("tatamiModal").dataset.stairCorner = src.stairCorner === "mawari" ? "mawari" : "odoriba";
     $("btnStairCorner").textContent = 曲がり角の名前($("tatamiModal").dataset.stairCorner);
+    // 階段の文字。空 = 自動(1階は UP、ほかは DN)
+    $("tatamiModal").dataset.stairLabel = 階段の文字の候補.includes(src.stairLabel) ? src.stairLabel : "";
+    $("btnStairLabel").textContent = 階段の文字のボタン($("tatamiModal").dataset.stairLabel);
   }
   $("stairCornerRow").style.display = isStair && $("tatamiModal").dataset.stairBent === "1" ? "flex" : "none";
   // 設備の大きさ(図面の枠で変える)。いまの寸法と「自動に戻す」。種類を変えている途中(新しい種類)では出さない
@@ -4909,6 +4935,15 @@ function stairRotationLabel(rotation) {
 }
 // L字の曲がり角：踊り場(平らな四角)か、回り段(内側の角から斜めの線で3段に分ける)か
 function 曲がり角の名前(v) { return v === "mawari" ? "回り段" : "踊り場"; }
+function 階段の文字のボタン(v) {
+  return v ? v : `${階段の文字の自動(state.floorName)}（自動）`;
+}
+$("btnStairLabel").addEventListener("click", () => {
+  const d = $("tatamiModal").dataset;
+  const 今 = d.stairLabel || 階段の文字の自動(state.floorName);
+  d.stairLabel = 階段の文字の候補[(階段の文字の候補.indexOf(今) + 1) % 階段の文字の候補.length];
+  $("btnStairLabel").textContent = 階段の文字のボタン(d.stairLabel);
+});
 $("btnStairCorner").addEventListener("click", () => {
   const d = $("tatamiModal").dataset;
   d.stairCorner = d.stairCorner === "mawari" ? "odoriba" : "mawari";
@@ -4926,6 +4961,11 @@ function confirmTatami() {
   const isStair = $("stepCountRow").style.display !== "none";
   const stepCount = isStair ? (parseInt($("tatamiModal").dataset.stepCount, 10) || DEFAULT_STEP_COUNT) : undefined;
   const stairRotation = isStair ? (parseInt($("tatamiModal").dataset.stairRotation, 10) || 0) : undefined;
+  const 階段の文字を合わせる = (r) => {
+    if (!isStair) return;
+    const v = $("tatamiModal").dataset.stairLabel;
+    if (階段の文字の候補.includes(v)) r.stairLabel = v; else delete r.stairLabel;
+  };
   const 曲がり角を合わせる = (r) => {
     if (!isStair) return;
     if ($("stairCornerRow").style.display === "none") return;   // L字でないときは触らない(形を戻したら元の描き方に戻る)
@@ -4938,6 +4978,7 @@ function confirmTatami() {
     // マス目からの再計算に黙って上書きされ、実測して入れた値が消えていた。
     editingRoom.tatamiManual = (v !== masuToTatami(polygonAreaMasu(editingRoom.points)));
     if (isStair) { editingRoom.stepCount = stepCount; editingRoom.stairRotation = stairRotation; }
+    階段の文字を合わせる(editingRoom);
     曲がり角を合わせる(editingRoom);
     if ($("tatamiModal").dataset.fixtureReset === "1") {
       delete editingRoom.fixtureSize; delete editingRoom.fixturePos; delete editingRoom.fixtureRotation;
@@ -4948,6 +4989,7 @@ function confirmTatami() {
     const room = { id: Date.now(), points: pendingRoom.points, typeKey: pendingRoom.typeKey, tatami: v, doors: [] };
     if (v !== masuToTatami(polygonAreaMasu(pendingRoom.points))) room.tatamiManual = true;
     if (isStair) { room.stepCount = stepCount; room.stairRotation = stairRotation; }
+    階段の文字を合わせる(room);
     曲がり角を合わせる(room);
     state.rooms.push(room);
     pendingRoom = null;
