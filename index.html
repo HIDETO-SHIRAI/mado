@@ -240,6 +240,8 @@
   .btn.primary { background: var(--accent); color: #fff; }
   .btn.danger { background: #fdeceA; color: var(--danger); }
 
+  /* 部屋の画面の「図面に書く名前」。行の右側に収まる幅(iOS がズームしないよう文字は16px) */
+  .text-input.label-text-input { width: 55%; max-width: 220px; padding: 7px 10px; margin-bottom: 0; }
   .text-input {
     width: 100%; border: 2px solid #e3e8ee; border-radius: 10px; padding: 12px;
     /* iOS Safariは入力欄のfont-sizeが16px未満だとタップ時に自動でページを
@@ -423,6 +425,20 @@
 <div class="modal-overlay" id="tatamiModal">
   <div class="modal">
     <h2 id="tatamiTitle">洋室 の広さ</h2>
+    <!-- 図面に書く名前。種類(色・合計の数え方)はそのままで、書く名前だけ変える。空なら種類の名前 -->
+    <div class="field-row" id="labelTextRow">
+      <label for="labelTextInput">図面に書く名前</label>
+      <input type="text" class="text-input label-text-input" id="labelTextInput" list="labelTextList" maxlength="12" autocomplete="off" enterkeyhint="done">
+    </div>
+    <datalist id="labelTextList">
+      <option value="ホール"></option><option value="納戸"></option><option value="サービスルーム"></option><option value="S"></option>
+      <option value="DK"></option><option value="LD"></option><option value="K"></option><option value="ダイニング"></option>
+      <option value="主寝室"></option><option value="子供部屋"></option><option value="書斎"></option><option value="ロフト"></option>
+      <option value="物入"></option><option value="CL"></option><option value="WCL"></option><option value="SB"></option>
+      <option value="下足入"></option><option value="PS"></option><option value="MB"></option><option value="棚"></option>
+      <option value="車庫"></option><option value="土間"></option><option value="ポーチ"></option><option value="テラス"></option>
+      <option value="ベランダ"></option><option value="屋根裏"></option><option value="吹抜"></option>
+    </datalist>
     <div class="field-row">
       <label id="tatamiSourceLabel">グリッドから自動計算</label>
       <div class="stepper">
@@ -1734,10 +1750,17 @@ const 室名の余白_マス = 0.3;   // 壁・設備からこれだけ離れて
 
 // 図面に書く部屋の名前。階段は「UP」「DN」(レインズの図面の書き方)。
 function 室名の名前(room) {
-  const type = roomType(room);
-  if (room.typeKey === "kaidan") return 階段の文字(room);
-  return type.label;
+  return 室名の手書き(room) || 室名の既定の名前(room);
 }
+function 室名の既定の名前(room) {
+  if (room.typeKey === "kaidan") return 階段の文字(room);
+  return roomType(room).label;
+}
+// 部屋の画面で書いた名前(room.labelText)。★2026-09-28 レインズの図面には「ホール」「納戸」「CL」「PS」「車庫」など、
+//   17種類にない名前が多い。種類(色・合計の数え方)はそのままで、図面に書く名前だけ変えられるようにした。
+function 室名の手書き(room) { return typeof room.labelText === "string" ? room.labelText.trim() : ""; }
+// 室名を書くか。廊下・デッドスペースは書かないが、名前を書いたときは書く(廊下に「ホール」など)
+function 室名を出すか(room) { return !roomType(room).noLabel || !!室名の手書き(room); }
 // 階段の文字。★2026-09-28 プロの図面は矢印に「UP」「DN」を添える(下の階から上る所が UP、上の階から下りる所が DN)。
 //   手で選んでいなければ、1階は UP、それ以外の階は DN。部屋の画面の「階段の文字」で UP / DN / 階段 を選べる。
 const 階段の文字の候補 = ["UP", "DN", "階段"];
@@ -1776,7 +1799,7 @@ function 室名の枠の大きさ(room) {
   const 面積 = polygonScreenArea(room.points);
   const size = 室名の文字の大きさ(面積);
   const 名前 = 室名の名前(room);
-  const 行 = type.hideTatami ? [名前] : (面積 < 1600 ? [畳の文字(room)] : [名前, 畳の文字(room)]);
+  const 行 = (type.hideTatami || type.noLabel) ? [名前] : (面積 < 1600 ? [畳の文字(room)] : [名前, 畳の文字(room)]);
   dctx.save();
   dctx.font = 室名の書体(size);
   const w = Math.max(...行.map((l) => dctx.measureText(l).width)) + 4;   // 白い縁取りの分
@@ -1922,7 +1945,7 @@ const 室名の位置の控え = new WeakMap();
 function 室名の自動の位置(room) {
   if (room.typeKey === "kaidan") return 階段の室名の位置(room);
   const 倍率の段 = Math.round(Math.log(view.scale) / Math.log(1.05));
-  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami,
+  const key = JSON.stringify([room.points, room.doors, room.typeKey, room.tatami, room.labelText,
     room.fixturePos, room.fixtureSize, room.fixtureRotation, roomHasFixture(room), 倍率の段, isExportRender]);
   let 控え = 室名の位置の控え.get(room);
   if (!控え || 控え.key !== key) {
@@ -1971,7 +1994,7 @@ function 室名の位置の図面座標(room) { const p = 室名の位置(room);
 // 画面に描いた室名の枠(つかめる範囲)。書き出しでは覚えない
 const 室名の描いた枠 = new WeakMap();
 function 室名に当たるか(room, sx, sy) {
-  if (!room || roomType(room).noLabel) return false;
+  if (!room || !室名を出すか(room)) return false;
   const f = 室名の描いた枠.get(room);
   if (!f) return false;
   // 小さい文字(トイレ・階段)でも指でつかめるよう、最低 40×28px は取る
@@ -1999,13 +2022,13 @@ function 選んだ部屋のつまみ(room, sx, sy) {
 }
 // 点線の枠(室名の枠を描く)そのものの中か。建具・つまみと取り合うときは、広げた当たりではなくこちらで見る
 function 室名の枠の中か(room, sx, sy) {
-  if (!room || roomType(room).noLabel) return false;
+  if (!room || !室名を出すか(room)) return false;
   const f = 室名の描いた枠.get(room);
   return !!f && Math.abs(sx - f.x) <= f.w / 2 + 5 && Math.abs(sy - f.y) <= f.h / 2 + 3;
 }
 // 選んだ部屋の室名を点線で囲む(つかんで動かせると分かるように)。設備のつまみと同じ紫
 function 室名の枠を描く(room) {
-  if (!room || roomType(room).noLabel) return;
+  if (!room || !室名を出すか(room)) return;
   const f = 室名の描いた枠.get(room);
   if (!f) return;
   dctx.save();
@@ -2091,7 +2114,7 @@ function drawRoomDecor(room) {
   dctx.restore();
 
   // 廊下など、室名も広さも表示する意味がない部屋種別はラベル描画自体を省略する
-  if (type.noLabel) return;
+  if (!室名を出すか(room)) return;
 
   // 置き場所は 室名の位置(room)：手で動かした位置、無ければ壁・設備・戸の弧を避けて探した位置
   const { x: labelX, y: labelY } = 室名の位置(room);
@@ -2129,7 +2152,7 @@ function drawRoomDecor(room) {
 
   const startSize = 室名の文字の大きさ(areaPx);
   let result;
-  if (type.hideTatami) {
+  if (type.hideTatami || type.noLabel) {
     // 畳数は表示せず室名だけにする(合計畳数の計算には引き続き含める)
     result = fitLines(室名の名前(room), startSize);
   } else {
@@ -3735,7 +3758,7 @@ function tryRoomSelectionTap(sx, sy) {
     // ★マウスのときは、選んだ部屋に効くキーを添える(知らなければ使われない)。
     const キーの案内 = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
       ? "" : "（壁の長さの数字をドラッグすると壁が動きます。Delete で削除、矢印キーで移動）";
-    const 室名の案内 = roomType(room).noLabel ? "" : "室名は点線の枠ごとドラッグで動かせます。";
+    const 室名の案内 = 室名を出すか(room) ? "室名は点線の枠ごとドラッグで動かせます。" : "";
     showHint((roomHasFixture(room)
       ? "頂点をドラッグで形を調整、点線の丸(設備アイコン)をドラッグで位置を、先の小さい丸をドラッグで向きを、枠の四角いつまみで大きさを調整できます(つまみが出ないときは拡大)。" + 室名の案内
       : "頂点をドラッグで形を調整できます。" + 室名の案内 + "もう一度タップすると編集メニューが開きます") + キーの案内);
@@ -4932,6 +4955,12 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   $("btnDeleteRoomInModal").style.display = isEdit ? "block" : "none";
   $("btnChangeRoomType").style.display = isEdit ? "block" : "none";
 
+  // 図面に書く名前。空欄のときに出す薄い字 = 種類の名前(階段は UP / DN)
+  {
+    const src = (isEdit && editingRoom) || pendingRoom || {};
+    $("labelTextInput").value = 室名の手書き(src);
+    $("labelTextInput").placeholder = type.key === "kaidan" ? 階段の文字({ ...src, labelText: "" }) : type.label;
+  }
   const isStair = type.key === "kaidan";
   $("stepCountRow").style.display = isStair ? "flex" : "none";
   $("stairLabelRow").style.display = isStair ? "flex" : "none";
@@ -4985,7 +5014,7 @@ function openTatamiModal(type, tatami, sourceText, isEdit) {
   キッチンのボタンで積んだ = false;
   if (LDKの部屋) $("btnKitchenOn").textContent = editingRoom.kitchenOn ? "あり" : "なし";
   // 室名の位置。新しく描いた部屋(まだ図面に無い)・室名を出さない種類(廊下など)では出さない
-  const 室名の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && !type.noLabel;
+  const 室名の部屋 = isEdit && editingRoom && editingRoom.typeKey === type.key && 室名を出すか(editingRoom);
   $("labelPosRow").style.display = 室名の部屋 ? "flex" : "none";
   室名のボタンで積んだ = false;
   if (室名の部屋) 室名の位置の表示を更新();
@@ -5120,6 +5149,11 @@ function confirmTatami() {
   const isStair = $("stepCountRow").style.display !== "none";
   const stepCount = isStair ? (parseInt($("tatamiModal").dataset.stepCount, 10) || DEFAULT_STEP_COUNT) : undefined;
   const stairRotation = isStair ? (parseInt($("tatamiModal").dataset.stairRotation, 10) || 0) : undefined;
+  const 書く名前 = ($("labelTextInput").value || "").trim();
+  const 名前を合わせる = (r) => {
+    if (書く名前 && 書く名前 !== 室名の既定の名前({ ...r, labelText: "" })) r.labelText = 書く名前;
+    else delete r.labelText;
+  };
   const 階段の文字を合わせる = (r) => {
     if (!isStair) return;
     const v = $("tatamiModal").dataset.stairLabel;
@@ -5138,6 +5172,7 @@ function confirmTatami() {
     editingRoom.tatamiManual = (v !== masuToTatami(polygonAreaMasu(editingRoom.points)));
     if (isStair) { editingRoom.stepCount = stepCount; editingRoom.stairRotation = stairRotation; }
     階段の文字を合わせる(editingRoom);
+    名前を合わせる(editingRoom);
     曲がり角を合わせる(editingRoom);
     if ($("tatamiModal").dataset.fixtureReset === "1") {
       delete editingRoom.fixtureSize; delete editingRoom.fixturePos; delete editingRoom.fixtureRotation;
@@ -5149,6 +5184,7 @@ function confirmTatami() {
     if (v !== masuToTatami(polygonAreaMasu(pendingRoom.points))) room.tatamiManual = true;
     if (isStair) { room.stepCount = stepCount; room.stairRotation = stairRotation; }
     階段の文字を合わせる(room);
+    名前を合わせる(room);
     曲がり角を合わせる(room);
     state.rooms.push(room);
     pendingRoom = null;
